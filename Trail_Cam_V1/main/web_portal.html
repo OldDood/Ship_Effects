@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrailCam S3 Portal</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; background-color: #f0f2f5; padding: 20px; color: #1c1e21; }
+        .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #007bff; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        .controls { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .file-list { list-style: none; padding: 0; }
+        .file-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee; }
+        .file-info { flex-grow: 1; }
+        .file-name { font-family: monospace; font-weight: bold; display: block; }
+        .file-meta { font-size: 0.8em; color: #666; }
+        .btn { padding: 8px 14px; border-radius: 4px; text-decoration: none; font-size: 0.9em; cursor: pointer; border: none; color: white; transition: opacity 0.2s; text-align: center; }
+        .btn:hover { opacity: 0.8; }
+        .snap-btn { background-color: #fd7e14; font-weight: bold; }
+        .save-btn { background-color: #007bff; } /* Blue for View */
+        .download-link { background-color: #28a745; } /* Green for Save */
+        .del-btn { background-color: #dc3545; }
+        .del-all-btn { background-color: #bd2130; border: 2px solid #841620; font-weight: bold; }
+        .refresh-btn { background-color: #6c757d; }
+        .actions { display: flex; gap: 5px; }
+        #status { font-weight: bold; color: #fd7e14; margin-left: 10px; }
+        .storage-container { margin-bottom: 20px; font-size: 0.85em; color: #666; }
+        .progress-bar { width: 100%; background: #e0e0e0; border-radius: 10px; height: 10px; margin-top: 5px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #28a745; width: 0%; transition: width 0.5s; }
+    </style>
+</head>
+<body>
+<div class="storage-container">
+    SD Card: <span id="storage-text">Calculating...</span>
+    <div class="progress-bar"><div id="storage-fill" class="progress-fill"></div></div>
+</div>
+
+<div class="container">
+    <h1>TrailCam S3 Portal</h1>
+    
+    <div class="controls">
+        <button onclick="takePhoto()" class="btn snap-btn">📸 Snap Photo</button>
+        <button onclick="fetchFiles()" class="btn refresh-btn">Refresh List</button>
+        <button onclick="saveAll()" class="btn save-btn">Save All</button>
+        <button onclick="deleteAll()" class="btn del-all-btn">🗑️ Delete All</button>
+        <span id="status"></span>
+    </div>
+    
+    <ul id="file-list" class="file-list">
+        <li>Loading files...</li>
+    </ul>
+</div>
+
+<script>
+    function formatBytes(b) {
+    if (b === 0) return '0 Bytes';
+    const i = Math.floor(Math.log(b) / Math.log(1024));
+    // Added 'GB' to the array to handle your 32GB SD card
+    return parseFloat((b / Math.pow(1024, i)).toFixed(2)) + ' ' + ['Bytes', 'KB', 'MB', 'GB'][i];
+    }
+
+   function fetchFiles() {
+    // Update the storage bar first
+    updateStorage();
+
+    const list = document.getElementById('file-list');
+    fetch('/list').then(res => res.json()).then(data => {
+        list.innerHTML = '';
+        if (!data.files || data.files.length === 0) {
+            list.innerHTML = '<li>No photos on SD card.</li>';
+            return;
+        }
+        // Sort by filename descending (newest first)
+        data.files.sort((a, b) => b.name.localeCompare(a.name));
+        
+        data.files.forEach(f => {
+            const li = document.createElement('li');
+            li.className = 'file-item';
+            li.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${f.name}</span>
+                    <span class="file-meta">${formatBytes(f.size)}</span>
+                </div>
+                <div class="actions">
+                    <a href="/download?file=${f.name}" target="_blank" class="btn save-btn">View</a>
+                    <a href="/download?file=${f.name}" download="${f.name}" class="btn download-link">Save</a>
+                    <button onclick="deleteFile('${f.name}')" class="btn del-btn">Delete</button>
+                </div>`;
+            list.appendChild(li);
+        });
+    });
+}
+
+
+    function takePhoto() {
+        const status = document.getElementById('status');
+        status.innerText = "Capturing...";
+        fetch('/capture').then(res => {
+            if (res.ok) {
+                status.innerText = "Saved!";
+                setTimeout(() => { status.innerText = ""; }, 2000);
+                fetchFiles();
+            } else {
+                alert("Capture failed!");
+                status.innerText = "";
+            }
+        });
+    }
+
+    function deleteFile(name) {
+        if (confirm("Delete " + name + "?")) {
+            fetch('/delete?file=' + name).then(() => fetchFiles());
+        }
+    }
+
+    function deleteAll() {
+        if (confirm("ARE YOU SURE? This will permanently delete ALL photos on the SD card.")) {
+            const status = document.getElementById('status');
+            status.innerText = "Deleting All...";
+            fetch('/delete_all').then(res => {
+                if (res.ok) {
+                    status.innerText = "SD Card Cleared!";
+                    setTimeout(() => { status.innerText = ""; }, 2000);
+                    fetchFiles();
+                } else {
+                    alert("Delete All failed.");
+                    status.innerText = "";
+                }
+            });
+        }
+    }
+
+    function updateStorage() {
+    fetch('/storage').then(res => res.json()).then(data => {
+        const used = data.total - data.free;
+        const pct = data.total > 0 ? (used / data.total) * 100 : 0;
+        document.getElementById('storage-text').innerText = 
+            `${formatBytes(used)} used of ${formatBytes(data.total)} (${pct.toFixed(1)}%)`;
+        document.getElementById('storage-fill').style.width = pct + '%';
+    });
+}
+
+// Call this inside fetchFiles() so it updates whenever the list refreshes
+
+async function saveAll() {
+    const links = document.querySelectorAll('.download-link');
+    if (links.length === 0) return;
+    
+    if (confirm(`Download ${links.length} files?`)) {
+        const status = document.getElementById('status');
+        for (let i = 0; i < links.length; i++) {
+            status.innerText = `File ${i + 1} of ${links.length}...`;
+            
+            const a = document.createElement('a');
+            a.href = links[i].href;
+            a.setAttribute('download', links[i].getAttribute('download'));
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            // TWEAK: Increased to 3 seconds. 
+            // This is the "Safety Gap" for the ESP32 to finish the SD read.
+            await new Promise(r => setTimeout(r, 3000));
+        }
+        status.innerText = "Done!";
+        setTimeout(() => { status.innerText = ""; }, 2000);
+    }
+}
+
+    window.onload = fetchFiles;
+</script>
+
+</body>
+</html>

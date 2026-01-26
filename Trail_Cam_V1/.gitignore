@@ -1,0 +1,20 @@
+# ESP-IDF Build Folders
+build/
+sdkconfig
+sdkconfig.old
+
+# VS Code Metadata
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Local/Temporary files
+node_modules/
+*.log
+*.tmp
+
+# Python cache
+__pycache__/
+*.py[cod]
