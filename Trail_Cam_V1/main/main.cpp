@@ -19,6 +19,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
+#include "esp_sleep.h"
 
 // This header includes your Menuconfig WiFi settings
 #include "sdkconfig.h"
@@ -75,14 +76,22 @@ void init_project_gpios() {
     gpio_config(&io_conf);
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 0); // Start OFF
 
-    // --- 2. PIR SENSOR (Input + Interrupt Ready) ---
+    // --- 2. PIR SENSOR (Input + Interrupt + Wakeup Ready) ---
     io_conf.pin_bit_mask = (1ULL << PIR_SENSOR_GPIO);
     io_conf.mode         = GPIO_MODE_INPUT;
-    // Set for Rising Edge Trigger (PIR High = Motion)
-   io_conf.intr_type    = GPIO_INTR_POSEDGE; 
+    // Set for Rising Edge Trigger (PIR High = Motion) for when the chip is awake
+    io_conf.intr_type    = GPIO_INTR_POSEDGE; 
     io_conf.pull_up_en   = GPIO_PULLUP_DISABLE;
     io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE; // Ensure LOW state when idle
     gpio_config(&io_conf);
+
+    /* --- S3 DEEP SLEEP WAKEUP CONFIG --- */
+
+    // Configure the specific PIR pin to wake the chip on a HIGH level.
+    // Deep sleep wakeup on S3 requires LEVEL triggers, not EDGE.
+   // gpio_wakeup_enable((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_HIGH_LEVEL);
+    // This is the S3-standard way to wake from a HIGH level on a specific pin
+    esp_sleep_enable_ext1_wakeup(1ULL << PIR_SENSOR_GPIO, ESP_EXT1_WAKEUP_ANY_HIGH);
 
     // --- 3. FIELD MODE SWITCH (Input) ---
     io_conf.pin_bit_mask = (1ULL << FIELD_MODE_SW_GPIO);
@@ -134,7 +143,12 @@ void init_wifi() {
 void time_sync_notification_cb(struct timeval *tv) {
     ESP_LOGI("SNTP", "Notification: Time has been synchronized!");
 }
-void init_sntp() {
+    
+// SNTP Init Function
+// This function sets up SNTP with explicit server configuration
+// and timezone settings.
+// SNTP is used to keep the system time accurate for timestamping photos.
+    void init_sntp() {
     if (esp_sntp_enabled()) {
         esp_sntp_stop(); // Restart it to be sure
     }
@@ -149,10 +163,10 @@ void init_sntp() {
 
     // Force an immediate sync notification
     sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
-    
+    // Set your timezone to Australia Central Standard Time (ACST)
     setenv("TZ", "ACST-9:30ACDT,M10.1.0,M4.1.0", 1);
     tzset();
-
+    //As soon as the time is updated from the internet, set a system notificaion.
     sntp_set_time_sync_notification_cb(time_sync_notification_cb);
     esp_sntp_init();
 }
@@ -296,10 +310,22 @@ void IRAM_ATTR pir_sensor_isr_handler(void* arg)
     gpio_set_intr_type(GPIO_NUM_1, GPIO_INTR_DISABLE);    
 }
 
+
 // 7. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
     extern "C" void app_main() {
-    // 1. Initialize NVS (Required for WiFi)
+   
+   //Functions that are alway initialized in any mode
+      // Initialize GPIOs
+    init_project_gpios(); 
+    // 2. Hardware Setup
+    init_sd_card();
+    vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms
+    init_camera();
+    vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms
+
+
+        // 1. Initialize NVS (Required for WiFi)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -307,17 +333,26 @@ void IRAM_ATTR pir_sensor_isr_handler(void* arg)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialize GPIOs
-    init_project_gpios();
-    
-    // 2. Hardware Setup
-    init_sd_card();
-    vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms
-    init_camera();
-    vTaskDelay(pdMS_TO_TICKS(500)); // Wait 500ms
-    
+   esp_err_t err = gpio_install_isr_service(0);
 
-    // 3. Network Setup
+if (err == ESP_OK) {
+    gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void*)PIR_SENSOR_GPIO);
+    printf("ISR service installed successfully.\n");
+} else if (err == ESP_ERR_INVALID_STATE) {
+    printf("ISR service was already installed. Skipping.\n");
+} else {
+    printf("Failed to install ISR service: %s\n", esp_err_to_name(err));
+}
+
+// 2. Hook the handler to the specific GPIO pin
+gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void*)PIR_SENSOR_GPIO);
+
+ //Functions only initialized in Field/Maintenance Mode  
+//// This block initiates the high power consumption peripheral in field mode
+if (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == 1) {
+        ESP_LOGI(TAG, "MODE: Field Switch is HIGH. Starting Web Server & Config...");
+        // Start your heavy peripherals here
+// 3. Network Setup
     init_wifi(); 
     vTaskDelay(pdMS_TO_TICKS(1000));
 
@@ -343,27 +378,15 @@ if (timeinfo.tm_year > (1970 - 1900)) { // If year is later than 1970
     ESP_LOGW(TAG, "SNTP sync timed out. Using default system time.");
 }
 
-// 5. Start the Web Portal
+    // 5. Start the Web Portal
     start_web_portal();
 
     // 6. Maintenance Loop vs. Capture Loop
     // For now, since we are testing Maintenance Mode, we stop here.
-    ESP_LOGI(TAG, "System is now in Maintenance Mode. Photo loop suspended.");
-
-esp_err_t err = gpio_install_isr_service(0);
-
-if (err == ESP_OK) {
-    gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void*)PIR_SENSOR_GPIO);
-    printf("ISR service installed successfully.\n");
-} else if (err == ESP_ERR_INVALID_STATE) {
-    printf("ISR service was already installed. Skipping.\n");
-} else {
-    printf("Failed to install ISR service: %s\n", esp_err_to_name(err));
-}
-
-// 2. Hook the handler to the specific GPIO pin
-gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void*)PIR_SENSOR_GPIO);
-    
+    ESP_LOGI(TAG, "System is now in Maintenance Mode. Photo loop suspended.");  
+} 
+//End of Field/Maintenance Mode Block 
+ 
     while (1) {
        if (motion_detected == 1) {
             ESP_LOGI("TrailCam", "Motion detected! Calling take_photo...");
@@ -379,10 +402,19 @@ gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void*
             // Reset and re-enable
             motion_detected = false;
             gpio_set_intr_type(GPIO_NUM_1, GPIO_INTR_POSEDGE);
+                // Small delay to let the CPU breathe
+                vTaskDelay(pdMS_TO_TICKS(10));
+                // This block puts the processor in deep sleep if the switch not in the field mode
+                //and an attempt to take a photo is complete triggerd by the PIR sensor interrupt
+                if (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == 0) {
+                ESP_LOGI(TAG, "Field Mode Switch detected (LOW). Entering Deep Sleep...");
+                //Go back to sleep 
+                esp_deep_sleep_start();
+                } 
         }
 
-        // Small delay to let the CPU breathe
-        vTaskDelay(pdMS_TO_TICKS(10));
+
+
     }
 
 }
