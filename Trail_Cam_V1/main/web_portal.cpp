@@ -11,10 +11,12 @@
 extern const uint8_t web_portal_html_start[] asm("_binary_web_portal_html_start");
 extern const uint8_t web_portal_html_end[]   asm("_binary_web_portal_html_end");
 static const char *TAG = "WebPortal";
+
 // Link to the function in main.cpp
 extern "C" esp_err_t take_photo(); 
 
-// --- Existing Handlers ---
+// --- Handlers ---
+
 esp_err_t index_get_handler(httpd_req_t *req) {
     const size_t html_len = web_portal_html_end - web_portal_html_start;
     httpd_resp_set_type(req, "text/html");
@@ -62,7 +64,6 @@ esp_err_t download_get_handler(httpd_req_t *req) {
     
     httpd_resp_set_type(req, "image/jpeg");
 
-    // TWEAK: Increase buffer to 16KB for fewer network packets
     const size_t chunk_size = 16384; 
     char *buffer = (char*)malloc(chunk_size);
     if (buffer == NULL) {
@@ -72,23 +73,17 @@ esp_err_t download_get_handler(httpd_req_t *req) {
 
     size_t read_bytes;
     esp_err_t res = ESP_OK;
-    
     while ((read_bytes = fread(buffer, 1, chunk_size, f)) > 0) {
-        // Send the chunk and check if the connection is still alive
         res = httpd_resp_send_chunk(req, buffer, read_bytes);
-        if (res != ESP_OK) {
-            break; 
-        }
+        if (res != ESP_OK) break; 
     }
 
     fclose(f);
     free(buffer);
 
-    // Only send the "Final" signal if the connection didn't fail mid-way
     if (res == ESP_OK) {
         httpd_resp_send_chunk(req, NULL, 0); 
     }
-    
     return res;
 }
 
@@ -104,7 +99,6 @@ esp_err_t delete_get_handler(httpd_req_t *req) {
     return httpd_resp_send_404(req);
 }
 
-// --- The Capture Handler ---
 esp_err_t capture_get_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Web request: /capture");
     if (take_photo() == ESP_OK) {
@@ -113,13 +107,11 @@ esp_err_t capture_get_handler(httpd_req_t *req) {
         return httpd_resp_send_500(req);
     }
 }
-// --- Additional Handler: Delete All Files ---
+
 esp_err_t delete_all_handler(httpd_req_t *req) {
     ESP_LOGI(TAG, "Web request: Delete All Files");
     DIR *dir = opendir("/sdcard");
-    if (dir == NULL) {
-        return httpd_resp_send_500(req);
-    }
+    if (dir == NULL) return httpd_resp_send_500(req);
 
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL) {
@@ -133,23 +125,20 @@ esp_err_t delete_all_handler(httpd_req_t *req) {
     return httpd_resp_sendstr(req, "All deleted");
 }
 
-// --- Additional Handler: Storage Info ---
 esp_err_t storage_get_handler(httpd_req_t *req) {
     FATFS *fs;
-    DWORD fre_clust, fre_sect, tot_sect;
-    
-    /* "0:" is the drive number for the SD card */
+    DWORD fre_clust;
     FRESULT res = f_getfree("0:", &fre_clust, &fs);
     
     uint64_t total_bytes = 0;
     uint64_t free_bytes = 0;
 
     if (res == FR_OK) {
-        // Calculate total and free space in bytes
-        tot_sect = (fs->n_fatent - 2) * fs->csize;
-        fre_sect = fre_clust * fs->csize;
-        total_bytes = (uint64_t)tot_sect * 512; 
-        free_bytes = (uint64_t)fre_sect * 512;
+        // Use uint64_t to prevent overflow on larger SD cards
+        uint64_t tot_sect = (uint64_t)(fs->n_fatent - 2) * fs->csize;
+        uint64_t fre_sect = (uint64_t)fre_clust * fs->csize;
+        total_bytes = tot_sect * 512; 
+        free_bytes = fre_sect * 512;
     }
 
     char json_response[128];
@@ -159,43 +148,39 @@ esp_err_t storage_get_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json_response);
 }
+
+// --- Server Start ---
+
 void start_web_portal() {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 10240; // High stack for camera ops
-    config.lru_purge_enable = true; // Purge old connections to free up memory
-    config.recv_wait_timeout = 10;  // Increase wait time to 10 seconds
+    config.stack_size = 10240; 
+    config.lru_purge_enable = true; 
+    config.recv_wait_timeout = 10;
 
     if (httpd_start(&server, &config) == ESP_OK) {
-        httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_get_handler };
+        // Every URI struct must have .user_ctx explicitly initialized to NULL
+        httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &index_uri);
         
-        httpd_uri_t list_uri = { .uri = "/list", .method = HTTP_GET, .handler = list_get_handler };
+        httpd_uri_t list_uri = { .uri = "/list", .method = HTTP_GET, .handler = list_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &list_uri);
         
-        httpd_uri_t download_uri = { .uri = "/download", .method = HTTP_GET, .handler = download_get_handler };
+        httpd_uri_t download_uri = { .uri = "/download", .method = HTTP_GET, .handler = download_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &download_uri);
         
-        httpd_uri_t delete_uri = { .uri = "/delete", .method = HTTP_GET, .handler = delete_get_handler };
+        httpd_uri_t delete_uri = { .uri = "/delete", .method = HTTP_GET, .handler = delete_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &delete_uri);
 
-        // Register the Capture URI
-        httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_get_handler };
+        httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &capture_uri);
         
-        // Register the Delete All URI
-        httpd_uri_t delall_uri = { .uri = "/delete_all", .method = HTTP_GET, .handler = delete_all_handler };
+        httpd_uri_t delall_uri = { .uri = "/delete_all", .method = HTTP_GET, .handler = delete_all_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &delall_uri);
 
-        // Register the Storage Info URI
-        httpd_uri_t storage_uri = {
-        .uri      = "/storage",
-        .method   = HTTP_GET,
-        .handler  = storage_get_handler,
-        .user_ctx = NULL
-        };
+        httpd_uri_t storage_uri = { .uri = "/storage", .method = HTTP_GET, .handler = storage_get_handler, .user_ctx = NULL };
         httpd_register_uri_handler(server, &storage_uri);
 
-        ESP_LOGI(TAG, "Server started with /capture support.");
+        ESP_LOGI(TAG, "Server started with all URIs initialized.");
     }
 }
