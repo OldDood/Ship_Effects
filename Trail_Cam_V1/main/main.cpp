@@ -24,9 +24,12 @@ See CammREADME.md for project overview and details.
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
 #include "esp_sleep.h"
+#include "esp_pm.h"
+#include "driver/gpio.h"
 
 // This header includes your Menuconfig WiFi settings
 #include "sdkconfig.h"
+#include "main.h"
 
 static const char *TAG = "TrailCam";
 
@@ -64,12 +67,13 @@ static volatile bool maintenance_mode_enabled = false;
 
 // For switch debouncing
 static uint32_t last_switch_check_time = 0;
-static uint8_t stable_field_reads = 0;
+static int8_t stable_field_reads = 0;
 
 // These flags prevent repeated logging of sleep entries, which can be noisy in the logs
 static bool motion_sleep_logged = false;
 static bool idle_sleep_logged = false;
 
+static bool camera_initialized = false;
 
 // This variable survives Light Sleep
 // It tracks the last time a photo was taken
@@ -80,6 +84,9 @@ RTC_DATA_ATTR uint64_t last_success_time_sec = 0;
 RTC_DATA_ATTR struct timeval sleep_anchor_time;
 // Flag to indicate if time has been set
 RTC_DATA_ATTR bool time_is_set = false;
+
+// SD Card Handle
+static sdmmc_card_t *card = NULL;
 
 /**
  * @brief Consolidated GPIO Initialization for ESP32-S3-WROOM-1
@@ -118,20 +125,25 @@ void init_project_gpios()
     // Light sleep wakeup on S3 requires LEVEL triggers, not EDGE.
     // gpio_wakeup_enable((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_HIGH_LEVEL);
     // This is the S3-standard way to wake from a HIGH level on a specific pin
+
     esp_sleep_enable_ext1_wakeup(1ULL << PIR_SENSOR_GPIO, ESP_EXT1_WAKEUP_ANY_HIGH);
 
+    NewFunction(io_conf);
+}
+
+void NewFunction(gpio_config_t &io_conf)
+{
     // --- 3. FIELD MODE SWITCH (Input) ---
     io_conf.pin_bit_mask = (1ULL << FIELD_MODE_SW_GPIO);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE; // Active LOW switch
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // Active LOW switch
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     gpio_config(&io_conf);
 
     ESP_LOGI("GPIO", "S3-WROOM-1 GPIOs Initialized: Flash(%d), PIR(%d), Switch(%d)",
              FLASH_LED_GPIO, PIR_SENSOR_GPIO, FIELD_MODE_SW_GPIO);
 }
-
 // 1. WiFi Handler
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -210,6 +222,13 @@ void init_sntp()
 // 4. Camera Init
 esp_err_t init_camera()
 {
+    // Check if already initialized
+    if (camera_initialized)
+    {
+        ESP_LOGI("CAM", "Camera already initialized. Skipping...");
+        return ESP_OK;
+    }
+
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -237,12 +256,30 @@ esp_err_t init_camera()
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
 
-    return esp_camera_init(&config);
+    esp_err_t err = esp_camera_init(&config);
+    if (err == ESP_OK)
+    {
+        camera_initialized = true;
+        ESP_LOGI("CAM", "Camera initialized successfully.");
+    }
+    else
+    {
+        ESP_LOGE("CAM", "Camera init failed with error 0x%x", err);
+    }
+
+    return err;
 }
 
 // 5. SD Card Init
 esp_err_t init_sd_card()
 {
+    // If the card pointer is already set, the card is already initialized.
+    if (card != NULL)
+    {
+        ESP_LOGI(TAG, "SD card already initialized. Skipping...");
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "Initializing SD card");
 
     // Define the mount point name
@@ -255,7 +292,6 @@ esp_err_t init_sd_card()
         .disk_status_check_enable = false,
         .use_one_fat = false};
 
-    sdmmc_card_t *card;
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.max_freq_khz = 5000; // Lower to 5MHz for stability
 
@@ -289,6 +325,29 @@ esp_err_t init_sd_card()
 
     ESP_LOGI(TAG, "SD Card mounted successfully!");
     return ESP_OK;
+}
+
+// 6. SD Card Uninitialise
+esp_err_t ret = ESP_OK; // Declare and initialize outside the if block
+
+esp_err_t un_init_sd_card()
+{
+    if (card != NULL)
+    {
+        ESP_LOGI(TAG, "Unmounting SD card...");
+        ret = esp_vfs_fat_sdcard_unmount(MOUNT_POINT, card);
+
+        if (ret == ESP_OK)
+        {
+            card = NULL; // Only clear the handle if unmount actually worked
+            ESP_LOGI(TAG, "Unmounted the SD card successfully.");
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to unmount the SD card.");
+        }
+    }
+    return ret;
 }
 
 // 6. Capture Function - Takes Photo and Saves to SD
@@ -377,13 +436,13 @@ void maintenance_mode_init()
 
 void field_mode_init()
 {
-    stop_web_portal();// Ensure web server is stopped if we were in maintenance mode
+    stop_web_portal(); // Ensure web server is stopped if we were in maintenance mode
     if (esp_sntp_enabled())
     {
         esp_sntp_stop(); // Stop SNTP to save power, since we won't have WiFi in Field Mode
     }
-    esp_wifi_stop();// Stop WiFi to save power in Field Mode
-    
+    esp_wifi_stop(); // Stop WiFi to save power in Field Mode
+
     ESP_LOGI(TAG, "FIELD MODE: Minimal boot.");
 }
 
@@ -391,7 +450,7 @@ void field_mode_init()
 // MAIN ENTRY
 extern "C" void app_main()
 {
-   
+
     // 1. HARDWARE & TIME RESTORATION
     init_project_gpios();
 
@@ -413,7 +472,7 @@ extern "C" void app_main()
     maintenance_mode_enabled = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
 
     // 3. INIT PERIPHERALS
-    init_sd_card();
+
     init_camera();
 
     // 4. INTERRUPT SETUP
@@ -424,7 +483,7 @@ extern "C" void app_main()
         gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void *)PIR_SENSOR_GPIO);
     }
 
-if (maintenance_mode_enabled)
+    if (maintenance_mode_enabled)
     {
         ESP_LOGI(TAG, "Switch is in Maintenance position at boot.");
         maintenance_mode_init();
@@ -476,97 +535,119 @@ if (maintenance_mode_enabled)
         }
 
         // --- STEP 1: CONTINUOUS MODE MONITORING ---
-        if (esp_log_timestamp() - last_switch_check_time > 50) // Check every 50ms
+        if (esp_log_timestamp() - last_switch_check_time > 50)
         {
             last_switch_check_time = esp_log_timestamp();
             bool current_sw = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
 
-            if (current_sw) // Switch is in Maintenance position
+            if (current_sw) // Physically in Maintenance position
             {
-                // DEBOUNCE: Increment counter until we hit 10 stable reads (500ms)
                 if (stable_field_reads < 10)
                 {
                     stable_field_reads++;
                 }
 
-                // ACTION: Once debounced, check if we need to turn services ON
+                // Transition to Maintenance
                 if (stable_field_reads >= 10 && !maintenance_mode_enabled)
                 {
                     maintenance_mode_enabled = true;
-                    ESP_LOGI(TAG, "Switch Debounced: Entering Maintenance Mode...");
-
-                    // This only runs ONCE when the switch transition is confirmed
+                    ESP_LOGI(TAG, "Entering Maintenance Mode...");
                     maintenance_mode_init();
                 }
             }
-            else // Switch is in Field position
+            else // Physically in Field position
             {
-                // ACTION: Only run field_mode_init ONCE when transitioning from Maintenance back to Field
-                if (maintenance_mode_enabled || stable_field_reads > 0)
+                if (stable_field_reads > 0)
                 {
-                    ESP_LOGI(TAG, "Switch Moved: Entering Field Mode...");
-                    field_mode_init(); 
-                    
-                    stable_field_reads = 0;
+                    stable_field_reads--;
+                }
+
+                // Transition to Field (Only when counter hits 0)
+                if (stable_field_reads == 0 && maintenance_mode_enabled)
+                {
                     maintenance_mode_enabled = false;
+                    ESP_LOGI(TAG, "Entering Field Mode...");
+                    field_mode_init();
                 }
             }
         }
 
-
-// MOTION & PHOTO LOGIC
-if (motion_detected)
-{
-    // 10-second Rate Limiter
-    if (last_success_time_sec != 0 && (now.tv_sec - last_success_time_sec) < 10)
-    {
-        ESP_LOGW(TAG, "Rate limiting: Only %lds since last photo.", (long)(now.tv_sec - last_success_time_sec));
-    }
-    else
-    {
-        take_photo();
-        gettimeofday(&now, NULL);
-        last_success_time_sec = now.tv_sec;
-    }
-
-    // Wait for Pulse to end
-    while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
-    {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-
-    motion_detected = false;
-    gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE);
-
-    if (!maintenance_mode_enabled)
-    {
-        if (!motion_sleep_logged) 
+        // MOTION & PHOTO LOGIC
+        if (motion_detected)
         {
-            gettimeofday(&sleep_anchor_time, NULL);
-            sleep_anchor_time.tv_sec += 2;
+            // 10-second Rate Limiter
+            if (last_success_time_sec != 0 && (now.tv_sec - last_success_time_sec) < 10)
+            {
+                ESP_LOGW(TAG, "Rate limiting: Only %lds since last photo.", (long)(now.tv_sec - last_success_time_sec));
+            }
+            else
+            {
+                init_sd_card();
+                init_camera();
+                take_photo();
+                gettimeofday(&now, NULL);
+                last_success_time_sec = now.tv_sec;
+            }
 
-            ESP_LOGI(TAG, "Entering Light Sleep...");
-            motion_sleep_logged = true; // Prevents re-logging
-            
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            esp_light_sleep_start();
+            // Wait for Pulse to end
+            while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
+            {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+
+            motion_detected = false;
+            gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE);
+
+            if (!maintenance_mode_enabled)
+            {
+                if (!motion_sleep_logged)
+                {
+                    gettimeofday(&sleep_anchor_time, NULL);
+                    sleep_anchor_time.tv_sec += 2;
+                    // Wait for PIR to go back to 0 so we don't immediately wake back up
+                    ESP_LOGI(TAG, "Waiting for PIR to clear...");
+                    while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
+                    {
+                        vTaskDelay(pdMS_TO_TICKS(100)); // Check every 100ms
+                    }
+
+                    ESP_LOGI(TAG, "PIR clear. Entering Sleep.");
+                    ESP_LOGI(TAG, "Entering Light Sleep...");
+                    motion_sleep_logged = true; // Prevents re-logging
+                    un_init_sd_card();          // Unmount SD card before sleeping to prevent corruption
+                    esp_camera_deinit();
+                    camera_initialized = false; // Reset camera init flag so it will re-init after sleep
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                    esp_light_sleep_start();
+                    motion_sleep_logged = false; // Reset the flag after waking up, so we can log again on the next motion event
+                }
+            }
+            else
+            {
+                vTaskDelay(pdMS_TO_TICKS(5000));
+            }
         }
-    }
-    else
-    {
-        vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-}
 
-// Idle Timeout
-if (!maintenance_mode_enabled && !idle_sleep_logged && esp_log_timestamp() > 20000)
-{
-    ESP_LOGI(TAG, "Idle Timeout. Sleeping...");
-    idle_sleep_logged = true; // Prevents re-logging
-    
-    esp_light_sleep_start();
-}
+        // Idle Timeout
+        if (!maintenance_mode_enabled && !idle_sleep_logged && esp_log_timestamp() > 20000)
+        {
+            /*             // Wait for PIR to go back to 0 so we don't immediately wake back up
+                        ESP_LOGI(TAG, "Waiting for PIR to clear...");
+                        while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
+                        {
+                            vTaskDelay(pdMS_TO_TICKS(100)); // Check every 100ms
+                        }
 
-vTaskDelay(pdMS_TO_TICKS(100));
+                        ESP_LOGI(TAG, "PIR clear. Entering Sleep.");
+                        un_init_sd_card(); // Unmount SD card before sleeping to prevent corruption
+                        esp_camera_deinit();
+                        camera_initialized = false; // Reset camera init flag so it will re-init after sleep
+                        ESP_LOGI(TAG, "Idle Timeout. Sleeping...");
+                        idle_sleep_logged = true; // Prevents re-logging
+                        vTaskDelay(pdMS_TO_TICKS(5000)); // Short delay to ensure logs are flushed before sleeping
+                        esp_light_sleep_start(); */
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
