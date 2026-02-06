@@ -1,3 +1,7 @@
+/* TrailCam Main Application
+See CammREADME.md for project overview and details.
+*/
+
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
@@ -62,11 +66,16 @@ static volatile bool maintenance_mode_enabled = false;
 static uint32_t last_switch_check_time = 0;
 static uint8_t stable_field_reads = 0;
 
-// This variable survives Deep Sleep
+// These flags prevent repeated logging of sleep entries, which can be noisy in the logs
+static bool motion_sleep_logged = false;
+static bool idle_sleep_logged = false;
+
+
+// This variable survives Light Sleep
 // It tracks the last time a photo was taken
 RTC_DATA_ATTR uint64_t last_success_time_sec = 0;
 
-// This survives Deep Sleep!
+// This survives Light Sleep!
 // It is used to track elapsed time across sleeps
 RTC_DATA_ATTR struct timeval sleep_anchor_time;
 // Flag to indicate if time has been set
@@ -103,10 +112,10 @@ void init_project_gpios()
     io_conf.pull_down_en = GPIO_PULLDOWN_ENABLE; // Ensure LOW state when idle
     gpio_config(&io_conf);
 
-    /* --- S3 DEEP SLEEP WAKEUP CONFIG --- */
+    /* --- S3 Light SLEEP WAKEUP CONFIG --- */
 
     // Configure the specific PIR pin to wake the chip on a HIGH level.
-    // Deep sleep wakeup on S3 requires LEVEL triggers, not EDGE.
+    // Light sleep wakeup on S3 requires LEVEL triggers, not EDGE.
     // gpio_wakeup_enable((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_HIGH_LEVEL);
     // This is the S3-standard way to wake from a HIGH level on a specific pin
     esp_sleep_enable_ext1_wakeup(1ULL << PIR_SENSOR_GPIO, ESP_EXT1_WAKEUP_ANY_HIGH);
@@ -279,7 +288,6 @@ esp_err_t init_sd_card()
     }
 
     ESP_LOGI(TAG, "SD Card mounted successfully!");
-    sdmmc_card_print_info(stdout, card);
     return ESP_OK;
 }
 
@@ -358,10 +366,32 @@ extern "C"
     }
 }
 
+// 5. START MODE-SPECIFIC SERVICES
+void maintenance_mode_init()
+{
+    ESP_LOGI(TAG, "MAINTENANCE MODE: Starting Network...");
+    init_wifi();
+    init_sntp();
+    start_web_portal();
+}
+
+void field_mode_init()
+{
+    stop_web_portal();// Ensure web server is stopped if we were in maintenance mode
+    if (esp_sntp_enabled())
+    {
+        esp_sntp_stop(); // Stop SNTP to save power, since we won't have WiFi in Field Mode
+    }
+    esp_wifi_stop();// Stop WiFi to save power in Field Mode
+    
+    ESP_LOGI(TAG, "FIELD MODE: Minimal boot.");
+}
+
 // 7. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
 extern "C" void app_main()
 {
+   
     // 1. HARDWARE & TIME RESTORATION
     init_project_gpios();
 
@@ -394,36 +424,37 @@ extern "C" void app_main()
         gpio_isr_handler_add((gpio_num_t)PIR_SENSOR_GPIO, pir_sensor_isr_handler, (void *)PIR_SENSOR_GPIO);
     }
 
-    // 5. START MODE-SPECIFIC SERVICES
-    if (maintenance_mode_enabled)
+if (maintenance_mode_enabled)
     {
-        ESP_LOGI(TAG, "MAINTENANCE MODE: Starting Network...");
-        init_wifi();
-        init_sntp();
-        start_web_portal();
+        ESP_LOGI(TAG, "Switch is in Maintenance position at boot.");
+        maintenance_mode_init();
     }
     else
     {
-        ESP_LOGI(TAG, "FIELD MODE: Minimal boot.");
+        ESP_LOGI(TAG, "Switch is in Field position at boot.");
+        field_mode_init();
     }
 
-// 6. PIR STABILIZATION & LATCHING
-ESP_LOGI(TAG, "Arming PIR sensor...");
+    // 6. PIR STABILIZATION & LATCHING
+    ESP_LOGI(TAG, "Arming PIR sensor...");
 
-// Arm the interrupt FIRST
-gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE); 
+    // Arm the interrupt FIRST
+    gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE);
 
-// Small delay to let the electrical state settle
-vTaskDelay(pdMS_TO_TICKS(100));
+    // Small delay to let the electrical state settle
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-// THE FIX: If the pin is ALREADY high, it won't fire a POSEDGE interrupt.
-// We must manually trip the flag for the motion that woke us up!
-if (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1) {
-    ESP_LOGI(TAG, "PIR is already HIGH. Latching initial trigger.");
-    motion_detected = true; 
-} else {
-    motion_detected = false; 
-}
+    // THE FIX: If the pin is ALREADY high, it won't fire a POSEDGE interrupt.
+    // We must manually trip the flag for the motion that woke us up!
+    if (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
+    {
+        ESP_LOGI(TAG, "PIR is already HIGH. Latching initial trigger.");
+        motion_detected = true;
+    }
+    else
+    {
+        motion_detected = false;
+    }
 
     // --- MAIN LOOP ---
     while (1)
@@ -445,84 +476,97 @@ if (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1) {
         }
 
         // --- STEP 1: CONTINUOUS MODE MONITORING ---
-if (esp_log_timestamp() - last_switch_check_time > 50) // Check every 50ms
-{
-    last_switch_check_time = esp_log_timestamp();
-    bool current_sw = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
+        if (esp_log_timestamp() - last_switch_check_time > 50) // Check every 50ms
+        {
+            last_switch_check_time = esp_log_timestamp();
+            bool current_sw = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
 
-    if (current_sw) // Switch is in Maintenance position
-    {
-        // DEBOUNCE: Increment counter until we hit 10 stable reads (500ms)
-        if (stable_field_reads < 10) {
-            stable_field_reads++;
+            if (current_sw) // Switch is in Maintenance position
+            {
+                // DEBOUNCE: Increment counter until we hit 10 stable reads (500ms)
+                if (stable_field_reads < 10)
+                {
+                    stable_field_reads++;
+                }
+
+                // ACTION: Once debounced, check if we need to turn services ON
+                if (stable_field_reads >= 10 && !maintenance_mode_enabled)
+                {
+                    maintenance_mode_enabled = true;
+                    ESP_LOGI(TAG, "Switch Debounced: Entering Maintenance Mode...");
+
+                    // This only runs ONCE when the switch transition is confirmed
+                    maintenance_mode_init();
+                }
+            }
+            else // Switch is in Field position
+            {
+                // ACTION: Only run field_mode_init ONCE when transitioning from Maintenance back to Field
+                if (maintenance_mode_enabled || stable_field_reads > 0)
+                {
+                    ESP_LOGI(TAG, "Switch Moved: Entering Field Mode...");
+                    field_mode_init(); 
+                    
+                    stable_field_reads = 0;
+                    maintenance_mode_enabled = false;
+                }
+            }
         }
 
-        // ACTION: Once debounced, check if we need to turn services ON
-        if (stable_field_reads >= 10 && !maintenance_mode_enabled)
+
+// MOTION & PHOTO LOGIC
+if (motion_detected)
+{
+    // 10-second Rate Limiter
+    if (last_success_time_sec != 0 && (now.tv_sec - last_success_time_sec) < 10)
+    {
+        ESP_LOGW(TAG, "Rate limiting: Only %lds since last photo.", (long)(now.tv_sec - last_success_time_sec));
+    }
+    else
+    {
+        take_photo();
+        gettimeofday(&now, NULL);
+        last_success_time_sec = now.tv_sec;
+    }
+
+    // Wait for Pulse to end
+    while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
+    {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    motion_detected = false;
+    gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE);
+
+    if (!maintenance_mode_enabled)
+    {
+        if (!motion_sleep_logged) 
         {
-            maintenance_mode_enabled = true;
-            ESP_LOGI(TAG, "Switch Debounced: Entering Maintenance Mode...");
+            gettimeofday(&sleep_anchor_time, NULL);
+            sleep_anchor_time.tv_sec += 2;
+
+            ESP_LOGI(TAG, "Entering Light Sleep...");
+            motion_sleep_logged = true; // Prevents re-logging
             
-            // This only runs ONCE when the switch transition is confirmed
-            init_wifi();
-            init_sntp();
-            start_web_portal();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            esp_light_sleep_start();
         }
     }
-    else // Switch is in Field position
+    else
     {
-        // RESET: If the switch moves back, clear the debounce counter
-        stable_field_reads = 0;
-        maintenance_mode_enabled = false;
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
-        // MOTION & PHOTO LOGIC
-        if (motion_detected)
-        {
-            // 10-second Rate Limiter (Persistent)
-            if (last_success_time_sec != 0 && (now.tv_sec - last_success_time_sec) < 10)
-            {
-                ESP_LOGW(TAG, "Rate limiting: Only %lds since last photo.", (long)(now.tv_sec - last_success_time_sec));
-            }
-            else
-            {
-                take_photo();
-                gettimeofday(&now, NULL);
-                last_success_time_sec = now.tv_sec;
-            }
 
-            // Scope-Optimized Wait for Pulse to end
-            while (gpio_get_level((gpio_num_t)PIR_SENSOR_GPIO) == 1)
-            {
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
+// Idle Timeout
+if (!maintenance_mode_enabled && !idle_sleep_logged && esp_log_timestamp() > 20000)
+{
+    ESP_LOGI(TAG, "Idle Timeout. Sleeping...");
+    idle_sleep_logged = true; // Prevents re-logging
+    
+    esp_light_sleep_start();
+}
 
-            motion_detected = false;
-            gpio_set_intr_type((gpio_num_t)PIR_SENSOR_GPIO, GPIO_INTR_POSEDGE);
-
-            if (!maintenance_mode_enabled)
-            {
-                // Save time anchor before deep sleep
-                gettimeofday(&sleep_anchor_time, NULL);
-                sleep_anchor_time.tv_sec += 2;
-
-                ESP_LOGI(TAG, "Entering Deep Sleep...");
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                esp_deep_sleep_start();
-            }
-            else
-            {
-                vTaskDelay(pdMS_TO_TICKS(5000));
-            }
-        }
-
-        // Idle Timeout
-        if (!maintenance_mode_enabled && esp_log_timestamp() > 20000)
-        {
-            ESP_LOGI(TAG, "Idle Timeout. Sleeping...");
-            esp_deep_sleep_start();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(100));
+vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

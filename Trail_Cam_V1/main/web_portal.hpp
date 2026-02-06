@@ -5,5 +5,6 @@
 
 // Starts the server on the IP assigned by your home router
 void start_web_portal();
+void stop_web_portal();
 
 #endif

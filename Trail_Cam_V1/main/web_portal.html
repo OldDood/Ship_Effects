@@ -92,20 +92,30 @@
 }
 
 
-    function takePhoto() {
-        const status = document.getElementById('status');
-        status.innerText = "Capturing...";
-        fetch('/capture').then(res => {
-            if (res.ok) {
-                status.innerText = "Saved!";
-                setTimeout(() => { status.innerText = ""; }, 2000);
-                fetchFiles();
-            } else {
-                alert("Capture failed!");
-                status.innerText = "";
-            }
-        });
-    }
+let isCapturing = false; // Guard variable
+
+function takePhoto() {
+    if (isCapturing) return; // Exit if already in progress
+    isCapturing = true;
+
+    const status = document.getElementById('status');
+    status.innerText = "Capturing...";
+
+    fetch('/capture').then(res => {
+        isCapturing = false; // Reset guard
+        if (res.ok) {
+            status.innerText = "Saved!";
+            setTimeout(() => { status.innerText = ""; }, 2000);
+            fetchFiles();
+        } else {
+            alert("Capture failed!");
+            status.innerText = "";
+        }
+    }).catch(err => {
+        isCapturing = false; // Reset guard on network error
+        status.innerText = "Error!";
+    });
+}
 
     function deleteFile(name) {
         if (confirm("Delete " + name + "?")) {
