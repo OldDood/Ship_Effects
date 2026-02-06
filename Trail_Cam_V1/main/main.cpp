@@ -55,9 +55,13 @@ static EventGroupHandle_t s_wifi_event_group;
 #define HREF_GPIO_NUM 7
 #define PCLK_GPIO_NUM 13
 
-#define PIR_SENSOR_GPIO 1
-#define FIELD_MODE_SW_GPIO 14
-#define FLASH_LED_GPIO 21
+#define PIR_SENSOR_GPIO 1 // The PIR motion sensor is connected to GPIO1 (ADC1_CH0 / Touch 1) on the S3. This is a clean GPIO that can be used for interrupts and wakeup without ADC or touch conflicts.
+#define MODE_SW_GPIO 14   // The physical on/off switch for Field/Maintenance mode. Active LOW (pulls to GND when in Field mode).
+#define FLASH_LED_GPIO 21 // The flash LED is connected to GPIO21 on the S3. This pin will be set HIGH to turn on the flash during photo capture, and LOW otherwise.
+
+static esp_netif_t *sta_netif = NULL;                // Global handle for the default Wi-Fi station network interface
+static esp_event_handler_instance_t instance_any_id; // Global handle for the Wi-Fi event handler (any ID)
+static esp_event_handler_instance_t instance_got_ip; // Global handle for the IP event handler (got IP)
 
 // Motion Detection Flag
 static volatile bool motion_detected = false;
@@ -67,7 +71,6 @@ static volatile bool maintenance_mode_enabled = false;
 
 // For switch debouncing
 static uint32_t last_switch_check_time = 0;
-static int8_t stable_field_reads = 0;
 
 // These flags prevent repeated logging of sleep entries, which can be noisy in the logs
 static bool motion_sleep_logged = false;
@@ -134,7 +137,7 @@ void init_project_gpios()
 void NewFunction(gpio_config_t &io_conf)
 {
     // --- 3. FIELD MODE SWITCH (Input) ---
-    io_conf.pin_bit_mask = (1ULL << FIELD_MODE_SW_GPIO);
+    io_conf.pin_bit_mask = (1ULL << MODE_SW_GPIO);
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.pull_up_en = GPIO_PULLUP_DISABLE; // Active LOW switch
@@ -142,7 +145,7 @@ void NewFunction(gpio_config_t &io_conf)
     gpio_config(&io_conf);
 
     ESP_LOGI("GPIO", "S3-WROOM-1 GPIOs Initialized: Flash(%d), PIR(%d), Switch(%d)",
-             FLASH_LED_GPIO, PIR_SENSOR_GPIO, FIELD_MODE_SW_GPIO);
+             FLASH_LED_GPIO, PIR_SENSOR_GPIO, MODE_SW_GPIO);
 }
 // 1. WiFi Handler
 static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -166,11 +169,27 @@ void init_wifi()
     s_wifi_event_group = xEventGroupCreate();
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
+    sta_netif = esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
-    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL);
-    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL);
+
+    // Register event handlers and capture the instance handles for later unregistration
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT,
+        ESP_EVENT_ANY_ID,
+        &event_handler,
+        NULL,
+        &instance_any_id // <--- Capture the handle here
+        ));
+        
+    // Register the IP event handler for when we get an IP address, and capture the instance handle
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        IP_EVENT,
+        IP_EVENT_STA_GOT_IP,
+        &event_handler,
+        NULL,
+        &instance_got_ip // <--- Capture the handle here
+        ));
 
     wifi_config_t wifi_config = {};
     strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid));
@@ -436,14 +455,31 @@ void maintenance_mode_init()
 
 void field_mode_init()
 {
-    stop_web_portal(); // Ensure web server is stopped if we were in maintenance mode
+    stop_web_portal();
+
     if (esp_sntp_enabled())
     {
-        esp_sntp_stop(); // Stop SNTP to save power, since we won't have WiFi in Field Mode
+        esp_sntp_stop();
     }
-    esp_wifi_stop(); // Stop WiFi to save power in Field Mode
 
-    ESP_LOGI(TAG, "FIELD MODE: Minimal boot.");
+    // 1. Stop the Wi-Fi Driver
+    esp_wifi_stop();
+
+    // 2. Unregister handlers (to prevent memory leaks/dangling pointers)
+    esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id);
+    esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip);
+
+    // 3. De-init Wi-Fi
+    esp_wifi_deinit();
+
+    // 4. Destroy the Netif (This is the missing link!)
+    if (sta_netif)
+    {
+        esp_netif_destroy_default_wifi(sta_netif);
+        sta_netif = NULL; // Critical: set to NULL so your guard works
+    }
+
+    ESP_LOGI(TAG, "FIELD MODE: Resources cleared and Wi-Fi fully unloaded.");
 }
 
 // 7. MAIN APPLICATION ENTRY POINT
@@ -469,7 +505,7 @@ extern "C" void app_main()
 
     // 2. BOOT-TIME MODE CHECK
     vTaskDelay(pdMS_TO_TICKS(50));
-    maintenance_mode_enabled = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
+    maintenance_mode_enabled = (gpio_get_level((gpio_num_t)MODE_SW_GPIO) == true);
 
     // 3. INIT PERIPHERALS
 
@@ -538,17 +574,12 @@ extern "C" void app_main()
         if (esp_log_timestamp() - last_switch_check_time > 50)
         {
             last_switch_check_time = esp_log_timestamp();
-            bool current_sw = (gpio_get_level((gpio_num_t)FIELD_MODE_SW_GPIO) == true);
+            bool field_mode_sw_pos = (gpio_get_level((gpio_num_t)MODE_SW_GPIO) == true);
 
-            if (current_sw) // Physically in Maintenance position
+            if (field_mode_sw_pos) // Physically in Maintenance position
             {
-                if (stable_field_reads < 10)
-                {
-                    stable_field_reads++;
-                }
-
                 // Transition to Maintenance
-                if (stable_field_reads >= 10 && !maintenance_mode_enabled)
+                if (!maintenance_mode_enabled)
                 {
                     maintenance_mode_enabled = true;
                     ESP_LOGI(TAG, "Entering Maintenance Mode...");
@@ -557,13 +588,8 @@ extern "C" void app_main()
             }
             else // Physically in Field position
             {
-                if (stable_field_reads > 0)
-                {
-                    stable_field_reads--;
-                }
-
                 // Transition to Field (Only when counter hits 0)
-                if (stable_field_reads == 0 && maintenance_mode_enabled)
+                if (maintenance_mode_enabled)
                 {
                     maintenance_mode_enabled = false;
                     ESP_LOGI(TAG, "Entering Field Mode...");
