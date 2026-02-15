@@ -75,6 +75,14 @@ The TrailCam is designed to maintain an accurate clock without needing a constan
 * **Timestamped Photos:** Files are named correctly (e.g., `2026_02_05_081004.jpg`) immediately upon boot.
 * **Intelligent Rate Limiting:** The camera uses the restored RTC clock to ensure it respects the **10-second cooldown** between captures, even though the device was powered down in between.
 
+## ☀️ Solar-Aware Smart Profiles
+
+### How it Works:
+- **Solar Math:** Upon trigger, the system calculates the sun's position for **Modbury, SA** based on the day of the year.
+- **True Dark Buffer:** "Night Mode" is automatically triggered **15 minutes after sunset** and ends **15 minutes before sunrise**.
+- **Dynamic Profiles:** - **Day:** High-speed Auto Exposure (AEC) and Auto Gain (AGC). Flash DISABLED.
+  - **Night:** Fixed long-exposure (AEC 250), high gain (AGC 20), and 6500K Color Balancing. Flash ENABLED.
+
 ## 🔄 System Logic & State Machine
 
 ### 1. Boot & Clock Restoration

@@ -26,6 +26,7 @@ See CammREADME.md for project overview and details.
 #include "esp_sleep.h"
 #include "esp_pm.h"
 #include "driver/gpio.h"
+#include <cmath> // For the solar math
 
 // This header includes your Menuconfig WiFi settings
 #include "sdkconfig.h"
@@ -181,7 +182,7 @@ void init_wifi()
         NULL,
         &instance_any_id // <--- Capture the handle here
         ));
-        
+
     // Register the IP event handler for when we get an IP address, and capture the instance handle
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         IP_EVENT,
@@ -271,8 +272,8 @@ esp_err_t init_camera()
     config.frame_size = FRAMESIZE_UXGA;
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.jpeg_quality = 20;// 0-63 lower means higher quality (and larger file size)
-    config.fb_count = 2;// Allocating 2 frame buffers for smoother capture
+    config.jpeg_quality = 20; // 0-63 lower means higher quality (and larger file size)
+    config.fb_count = 2;      // Allocating 2 frame buffers for smoother capture
     config.grab_mode = CAMERA_GRAB_LATEST;
 
     esp_err_t err = esp_camera_init(&config);
@@ -280,30 +281,6 @@ esp_err_t init_camera()
     {
         camera_initialized = true;
         ESP_LOGI("CAM", "Camera initialized successfully.");
-
-        // 1. Lower the Clock (XCLK)
-// If you haven't already in your 'config' struct, 10MHz or even 8MHz 
-// allows the sensor more time to process pixels in the dark.
-sensor_t * s = esp_camera_sensor_get();
-// 2. FORCE MANUAL SETTINGS (Don't let it 'Auto-guess')
-s->set_exposure_ctrl(s, 0); // Disable Auto Exposure
-s->set_gain_ctrl(s, 0);     // Disable Auto Gain
-s->set_awb_gain(s, 0);      // Disable Auto White Balance (prevents green tint)
-
-// 3. SET PRE-TUNED VALUES (Example values for bright light)
-// These values (0x200, 0x05) are placeholders; you'll need to tune them once.
-s->set_aec_value(s, 600);   // Manually set shutter speed (0 to 1200)
-s->set_agc_gain(s, 20);      // Manually set high gain (0 to 30)
-
-
-// 4. Night Mode / Frame Rate Reduction
-// This is the most important tweak. It allows the sensor to drop the 
-// frame rate significantly to keep the shutter open longer.
-s->set_special_effect(s, 2);      // Set to black and white mode to reduce processing and improve low-light sensitivity
-s->set_wb_mode(s, 0);         // Disable white balance adjustments to prevent green tint in night shots
-// Some OV2640 versions support a specific "Night Mode" register toggle
-// via the following (if available in your driver version):
- s->set_raw_gma(s, 1);   // Enable Night Mode (if supported by your sensor/driver) to reduce frame rate and increase exposure time
     }
     else
     {
@@ -393,51 +370,118 @@ esp_err_t un_init_sd_card()
     return ret;
 }
 
-// 6. Capture Function - Takes Photo and Saves to SD
+bool is_solar_night(struct tm *ti)
+{
+    // 1. Get Day of Year (0-365)
+    int day = ti->tm_yday;
+
+    // 2. Solar Approximation for Adelaide/Modbury
+    // Sunrise/Sunset shift for -34.8 Latitude
+    // These constants approximate the South Australian seasonal shift
+    float sunrise_mins = 400 + 70 * cos((day + 10) * 0.0172);
+    float sunset_mins = 1070 - 100 * cos((day + 10) * 0.0172);
+
+    // 3. Apply your 15-minute "True Dark" buffers
+    int night_start = (int)sunset_mins + 15;
+    int night_end = (int)sunrise_mins - 15;
+
+    // 4. Current time in minutes from midnight
+    int current_mins = (ti->tm_hour * 60) + ti->tm_min;
+
+    // 5. Check if we are in the night zone (handles wrap-around at midnight)
+    if (current_mins >= night_start || current_mins <= night_end)
+    {
+        return true;
+    }
+    return false; // If current time is between night_end and night_start, it's not solar night
+}
+
+// 1. New dedicated function to handle the sensor personality
+void apply_smart_profile(sensor_t *s, uint8_t ambient_lux)
+{
+    // Ensure the image is always oriented correctly
+    s->set_vflip(s, 1);
+    s->set_hmirror(s, 1);
+
+    if (ambient_lux < 80)
+    {
+        ESP_LOGI(TAG, "Night Detected. Activating 6500K Flash Profile.");
+        s->set_exposure_ctrl(s, 0);
+        s->set_aec_value(s, 250); // Your calibrated AEC 0-1200, lower means longer exposure
+        s->set_gain_ctrl(s, 0);
+        s->set_agc_gain(s, 20);      // Your calibrated AGC 0-30, higher means more gain
+        s->set_wb_mode(s, 1);        // Sunny/6500K white balance mode, which is a good match for our flash color
+        s->set_contrast(s, 1);       // Slight contrast boost for better detail in shadows
+        s->set_special_effect(s, 2); // Apply a blue-ish tint to compensate for the warm flash. This is a bit of a hack, but it can help balance the color in very dark conditions. Adjust or remove as needed based on your testing.
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Daylight Detected. Using Auto Profile.");
+
+        s->set_exposure_ctrl(s, 1);
+        s->set_gain_ctrl(s, 1);
+        s->set_whitebal(s, 1);
+        s->set_wb_mode(s, 0);
+        s->set_special_effect(s, 0); // No special effect in daylight
+        s->set_contrast(s, 0);       // Default contrast for daylight
+    }
+}
+
+/// 6. Capture Function - Takes Photo and Saves to SD
 extern "C" esp_err_t take_photo()
 {
     ESP_LOGI("TrailCam", "Initiating capture sequence...");
 
+    // 1. GET TIME ONCE (Consolidated at the top to fix redeclaration errors)
+    struct tm timeinfo;
+    time_t now = time(NULL);
+    localtime_r(&now, &timeinfo);
+
+    // 2. SOLAR LOGIC & SENSOR SETUP
+    bool night_mode = is_solar_night(&timeinfo);
+
+    ESP_LOGI(TAG, "Solar Analysis: %02d:%02d | %s Mode",
+             timeinfo.tm_hour,
+             timeinfo.tm_min,
+             night_mode ? "NIGHT" : "DAY");
+
+    // Spoof the lux to trigger your existing if/else logic in apply_smart_profile
+    uint8_t spoofed_lux = night_mode ? 20 : 200;
+
+    sensor_t *s = esp_camera_sensor_get();
+    apply_smart_profile(s, spoofed_lux);
+
     // --- FLASH CONTROL: ON ---
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 1);
-   
-// 2. --- WARM-UP / FLUSH ---
-    // We grab and discard frames. This does two things:
-    // a) It physically clears the old 'dark' data out of the camera's internal buffer.
-    // b) It lets the Auto-Exposure (AEC) react to the new 2000-lumen light.
-    for(int i = 0; i < 4; i++) {
+
+    // 3. --- WARM-UP / FLUSH ---
+    for (int i = 0; i < 4; i++)
+    {
         camera_fb_t *fb_temp = esp_camera_fb_get();
-        if(fb_temp) {
+        if (fb_temp)
             esp_camera_fb_return(fb_temp);
-        }
     }
 
+    // Capture the actual frame
     camera_fb_t *fb = esp_camera_fb_get();
 
-    // --- FLASH CONTROL: OFF ---motion
-    vTaskDelay(pdMS_TO_TICKS(500)); // Stabilize light/exposure
+    // --- FLASH CONTROL: OFF ---
+    // Note: Removed the vTaskDelay here to ensure we don't hold the flash on during SD writes
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 0);
 
-    // Check if capture was successful
+    // 4. ERROR CHECKING
     if (!fb)
     {
         ESP_LOGE("TrailCam", "Camera capture failed!");
         return ESP_FAIL;
     }
 
+    // 5. FILENAME GENERATION (Using the timeinfo we declared at the top)
     char filename[100];
-    memset(filename, 0, sizeof(filename));
-
-    struct tm timeinfo;
-    time_t now = time(NULL);
-    localtime_r(&now, &timeinfo);
-
-    // 1. Create the filename string first
     snprintf(filename, sizeof(filename), "/sdcard/%04d_%02d_%02d_%02d%02d%02d.jpg",
              timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
-    // 2. Now you can log it and open the file
     ESP_LOGI("TrailCam", "Opening file: %s", filename);
     FILE *file = fopen(filename, "wb");
 
@@ -448,6 +492,7 @@ extern "C" esp_err_t take_photo()
         return ESP_FAIL;
     }
 
+    // 6. SD WRITE
     size_t written = fwrite(fb->buf, 1, fb->len, file);
     fclose(file);
 
