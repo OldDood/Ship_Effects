@@ -271,8 +271,8 @@ esp_err_t init_camera()
     config.frame_size = FRAMESIZE_UXGA;
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.jpeg_quality = 12;
-    config.fb_count = 2;
+    config.jpeg_quality = 20;// 0-63 lower means higher quality (and larger file size)
+    config.fb_count = 2;// Allocating 2 frame buffers for smoother capture
     config.grab_mode = CAMERA_GRAB_LATEST;
 
     esp_err_t err = esp_camera_init(&config);
@@ -280,6 +280,30 @@ esp_err_t init_camera()
     {
         camera_initialized = true;
         ESP_LOGI("CAM", "Camera initialized successfully.");
+
+        // 1. Lower the Clock (XCLK)
+// If you haven't already in your 'config' struct, 10MHz or even 8MHz 
+// allows the sensor more time to process pixels in the dark.
+sensor_t * s = esp_camera_sensor_get();
+// 2. FORCE MANUAL SETTINGS (Don't let it 'Auto-guess')
+s->set_exposure_ctrl(s, 0); // Disable Auto Exposure
+s->set_gain_ctrl(s, 0);     // Disable Auto Gain
+s->set_awb_gain(s, 0);      // Disable Auto White Balance (prevents green tint)
+
+// 3. SET PRE-TUNED VALUES (Example values for bright light)
+// These values (0x200, 0x05) are placeholders; you'll need to tune them once.
+s->set_aec_value(s, 600);   // Manually set shutter speed (0 to 1200)
+s->set_agc_gain(s, 20);      // Manually set high gain (0 to 30)
+
+
+// 4. Night Mode / Frame Rate Reduction
+// This is the most important tweak. It allows the sensor to drop the 
+// frame rate significantly to keep the shutter open longer.
+s->set_special_effect(s, 2);      // Set to black and white mode to reduce processing and improve low-light sensitivity
+s->set_wb_mode(s, 0);         // Disable white balance adjustments to prevent green tint in night shots
+// Some OV2640 versions support a specific "Night Mode" register toggle
+// via the following (if available in your driver version):
+ s->set_raw_gma(s, 1);   // Enable Night Mode (if supported by your sensor/driver) to reduce frame rate and increase exposure time
     }
     else
     {
@@ -376,7 +400,17 @@ extern "C" esp_err_t take_photo()
 
     // --- FLASH CONTROL: ON ---
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 1);
-    vTaskDelay(pdMS_TO_TICKS(100)); // Stabilize light/exposure
+   
+// 2. --- WARM-UP / FLUSH ---
+    // We grab and discard frames. This does two things:
+    // a) It physically clears the old 'dark' data out of the camera's internal buffer.
+    // b) It lets the Auto-Exposure (AEC) react to the new 2000-lumen light.
+    for(int i = 0; i < 4; i++) {
+        camera_fb_t *fb_temp = esp_camera_fb_get();
+        if(fb_temp) {
+            esp_camera_fb_return(fb_temp);
+        }
+    }
 
     camera_fb_t *fb = esp_camera_fb_get();
 
