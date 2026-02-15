@@ -375,11 +375,13 @@ bool is_solar_night(struct tm *ti)
     // 1. Get Day of Year (0-365)
     int day = ti->tm_yday;
 
-    // 2. Solar Approximation for Adelaide/Modbury
-    // Sunrise/Sunset shift for -34.8 Latitude
-    // These constants approximate the South Australian seasonal shift
-    float sunrise_mins = 400 + 70 * cos((day + 10) * 0.0172);
-    float sunset_mins = 1070 - 100 * cos((day + 10) * 0.0172);
+    // 1. Sunrise: Aiming for ~6:45 AM average with seasonal swing
+    // 480 is the base (8:00 AM), -80 pulls it back toward 6:40 AM
+    float sunrise_mins = 480 - 80 * cos((day + 10) * 0.0172);
+
+    // 2. Sunset: Aiming for ~7:40 PM average to account for Daylight Savings
+    // 1120 is the base (6:40 PM), +95 pushes it toward 8:15 PM in summer
+    float sunset_mins = 1120 + 95 * cos((day + 10) * 0.0172);
 
     // 3. Apply your 15-minute "True Dark" buffers
     int night_start = (int)sunset_mins + 15;
