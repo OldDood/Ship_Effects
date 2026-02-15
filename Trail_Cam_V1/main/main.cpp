@@ -272,7 +272,7 @@ esp_err_t init_camera()
     config.frame_size = FRAMESIZE_UXGA;
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.jpeg_quality = 20; // 0-63 lower means higher quality (and larger file size)
+    config.jpeg_quality = 8; // 0-63 lower means higher quality (and larger file size)
     config.fb_count = 2;      // Allocating 2 frame buffers for smoother capture
     config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -404,7 +404,7 @@ void apply_smart_profile(sensor_t *s, uint8_t ambient_lux)
     // Ensure the image is always oriented correctly
     s->set_vflip(s, 1);
     s->set_hmirror(s, 1);
-
+    s->set_sharpness(s, 2);  // Max sharpness (range is -2 to 2)
     if (ambient_lux < 80)
     {
         ESP_LOGI(TAG, "Night Detected. Activating 6500K Flash Profile.");
