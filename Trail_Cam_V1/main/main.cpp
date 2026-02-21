@@ -60,6 +60,12 @@ static EventGroupHandle_t s_wifi_event_group;
 #define MODE_SW_GPIO 14   // The physical on/off switch for Field/Maintenance mode. Active LOW (pulls to GND when in Field mode).
 #define FLASH_LED_GPIO 21 // The flash LED is connected to GPIO21 on the S3. This pin will be set HIGH to turn on the flash during photo capture, and LOW otherwise.
 
+static int sunrise_mins = 0; 
+static int sunset_mins = 0;
+extern "C" int get_sunrise_mins() { return sunrise_mins; }
+extern "C" int get_sunset_mins() { return sunset_mins; }
+
+
 static esp_netif_t *sta_netif = NULL;                // Global handle for the default Wi-Fi station network interface
 static esp_event_handler_instance_t instance_any_id; // Global handle for the Wi-Fi event handler (any ID)
 static esp_event_handler_instance_t instance_got_ip; // Global handle for the IP event handler (got IP)
@@ -273,7 +279,7 @@ esp_err_t init_camera()
     config.pixel_format = PIXFORMAT_JPEG;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = 8; // 0-63 lower means higher quality (and larger file size)
-    config.fb_count = 2;      // Allocating 2 frame buffers for smoother capture
+    config.fb_count = 2;     // Allocating 2 frame buffers for smoother capture
     config.grab_mode = CAMERA_GRAB_LATEST;
 
     esp_err_t err = esp_camera_init(&config);
@@ -370,32 +376,57 @@ esp_err_t un_init_sd_card()
     return ret;
 }
 
-bool is_solar_night(struct tm *ti)
-{
-    // 1. Get Day of Year (0-365)
+
+// Adelaide, South Australia Coordinates
+const float ADL_LAT = -34.9285;
+const float ADL_LON = 138.6007;
+
+extern "C" bool is_solar_night(struct tm *ti) {
+    // 1. Determine UTC Offset for Adelaide
+    // tm_isdst > 0 means Daylight Savings is active
+    float tz_offset = (ti->tm_isdst > 0) ? 10.5 : 9.5;
+
+   
+    // --- START SOLAR MATH ---
+    float rad = M_PI / 180.0;
     int day = ti->tm_yday;
 
-    // 1. Sunrise: Aiming for ~6:45 AM average with seasonal swing
-    // 480 is the base (8:00 AM), -80 pulls it back toward 6:40 AM
-    float sunrise_mins = 480 - 80 * cos((day + 10) * 0.0172);
+    // Solar Declination: Position of sun relative to equator
+    float declination = 23.45 * sin(rad * (360.0 / 365.0) * (day - 81));
+    
+    // Equation of Time: Adjusts for Earth's orbital "wobble"
+    float b = rad * (360.0 / 364.0) * (day - 81);
+    float eot = 9.87 * sin(2 * b) - 7.53 * cos(b) - 1.5 * sin(b);
+    
+    // Hour Angle: The distance from noon to sunrise/sunset
+    float cos_h = (cos(rad * 90.833) - sin(rad * ADL_LAT) * sin(rad * declination)) / 
+                  (cos(rad * ADL_LAT) * cos(rad * declination));
+    
+    // Calculate sunrise/sunset in UTC minutes, then shift to Adelaide local time
+    float h = acos(cos_h) / rad; 
+    float solar_noon_utc = 720.0 - (4.0 * ADL_LON) - eot;
+    
+    sunrise_mins = (int)(solar_noon_utc - (h * 4.0) + (tz_offset * 60.0));
+    sunset_mins = (int)(solar_noon_utc + (h * 4.0) + (tz_offset * 60.0));
+    // --- END SOLAR MATH ---
 
-    // 2. Sunset: Aiming for ~7:40 PM average to account for Daylight Savings
-    // 1120 is the base (6:40 PM), +95 pushes it toward 8:15 PM in summer
-    float sunset_mins = 1120 + 95 * cos((day + 10) * 0.0172);
+    // Logging the results for Adelaide
+    ESP_LOGI(TAG, "Today is Day %d of the year", ti->tm_yday);
+    ESP_LOGI(TAG, "Calculated Sunrise: %02d:%02d", sunrise_mins / 60, sunrise_mins % 60);
+    ESP_LOGI(TAG, "Calculated Sunset:  %02d:%02d", sunset_mins / 60, sunset_mins % 60);
 
     // 3. Apply your 15-minute "True Dark" buffers
-    int night_start = (int)sunset_mins + 15;
-    int night_end = (int)sunrise_mins - 15;
+    int night_start = sunset_mins + 15;
+    int night_end = sunrise_mins - 15;
 
     // 4. Current time in minutes from midnight
     int current_mins = (ti->tm_hour * 60) + ti->tm_min;
 
     // 5. Check if we are in the night zone (handles wrap-around at midnight)
-    if (current_mins >= night_start || current_mins <= night_end)
-    {
+    if (current_mins >= night_start || current_mins <= night_end) {
         return true;
     }
-    return false; // If current time is between night_end and night_start, it's not solar night
+    return false;
 }
 
 // 1. New dedicated function to handle the sensor personality
@@ -404,17 +435,17 @@ void apply_smart_profile(sensor_t *s, uint8_t ambient_lux)
     // Ensure the image is always oriented correctly
     s->set_vflip(s, 1);
     s->set_hmirror(s, 1);
-    s->set_sharpness(s, 2);  // Max sharpness (range is -2 to 2)
+    s->set_sharpness(s, 2); // Max sharpness (range is -2 to 2)
     if (ambient_lux < 80)
     {
         ESP_LOGI(TAG, "Night Detected. Activating 6500K Flash Profile.");
         s->set_exposure_ctrl(s, 0);
-        s->set_aec_value(s, 250); // Your calibrated AEC 0-1200, lower means longer exposure
+        s->set_aec_value(s, 700); // INCREASED: Let the shutter stay open slightly longer (up to 1200 max)
         s->set_gain_ctrl(s, 0);
-        s->set_agc_gain(s, 20);      // Your calibrated AGC 0-30, higher means more gain
-        s->set_wb_mode(s, 1);        // Sunny/6500K white balance mode, which is a good match for our flash color
-        s->set_contrast(s, 1);       // Slight contrast boost for better detail in shadows
-        s->set_special_effect(s, 2); // Apply a blue-ish tint to compensate for the warm flash. This is a bit of a hack, but it can help balance the color in very dark conditions. Adjust or remove as needed based on your testing.
+        s->set_agc_gain(s, 8);       // DECREASED: Drop the electronic gain. Let the 2000lm flash provide the brightness.
+        s->set_wb_mode(s, 1);        // 6500K mode matches your LED well
+        s->set_contrast(s, 2);       // INCREASED: Pushing contrast to 2 will make the subject "pop" against the dark background
+        s->set_special_effect(s, 0); // Grayscale is perfect here for hiding color noise
     }
     else
     {
@@ -456,8 +487,14 @@ extern "C" esp_err_t take_photo()
     // --- FLASH CONTROL: ON ---
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 1);
 
+    // 2. --- PHYSICAL DELAY ---
+    // Give the LED driver 50ms to reach full brightness and the sensor to wake up
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     // 3. --- WARM-UP / FLUSH ---
-    for (int i = 0; i < 4; i++)
+    // Increase to 6 frames. This gives the sensor's "AEC" logic more time
+    // to see the LED light and adjust the gain down so the image isn't grainy.
+    for (int i = 0; i < 6; i++)
     {
         camera_fb_t *fb_temp = esp_camera_fb_get();
         if (fb_temp)
@@ -467,8 +504,8 @@ extern "C" esp_err_t take_photo()
     // Capture the actual frame
     camera_fb_t *fb = esp_camera_fb_get();
 
+    vTaskDelay(pdMS_TO_TICKS(100));
     // --- FLASH CONTROL: OFF ---
-    // Note: Removed the vTaskDelay here to ensure we don't hold the flash on during SD writes
     gpio_set_level((gpio_num_t)FLASH_LED_GPIO, 0);
 
     // 4. ERROR CHECKING

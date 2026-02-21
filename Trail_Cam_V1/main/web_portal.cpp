@@ -7,10 +7,15 @@
 #include <unistd.h>
 #include "esp_netif.h"
 #include "esp_vfs_fat.h"
+#include <time.h>
 
 extern const uint8_t web_portal_html_start[] asm("_binary_web_portal_html_start");
 extern const uint8_t web_portal_html_end[] asm("_binary_web_portal_html_end");
 static const char *TAG = "WebPortal";
+
+extern "C" bool is_solar_night(struct tm *ti);
+extern "C" int get_sunrise_mins(); // Adjust based on your actual function names
+extern "C" int get_sunset_mins();
 
 // Link to the function in main.cpp
 extern "C" esp_err_t take_photo();
@@ -180,6 +185,40 @@ esp_err_t storage_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, json_response);
 }
 
+// You'll need to make sure these variables or functions
+// from your solar math are accessible here.
+extern "C" bool is_solar_night(struct tm *ti);
+extern "C" int get_sunrise_mins(); // Adjust based on your actual function names
+extern "C" int get_sunset_mins();
+
+esp_err_t solar_get_handler(httpd_req_t *req)
+{
+    struct tm ti;
+    time_t now;
+    char json_response[128];
+
+    time(&now);                // Get the current Unix timestamp
+    localtime_r(&now, &ti);    // Convert it to local time structure
+
+    // Check if the year is 1970 (meaning NTP hasn't synced yet)
+    if (ti.tm_year < (2020 - 1900)) {
+        snprintf(json_response, sizeof(json_response), "{\"error\":\"Time not synced via NTP\"}");
+    } else {
+        int sunrise = get_sunrise_mins(); 
+        int sunset = get_sunset_mins();
+        bool night = is_solar_night(&ti);
+
+        snprintf(json_response, sizeof(json_response),
+                 "{\"sunrise\":\"%02d:%02d\",\"sunset\":\"%02d:%02d\",\"is_night\":%s}",
+                 sunrise / 60, sunrise % 60,
+                 sunset / 60, sunset % 60,
+                 night ? "true" : "false");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json_response);
+}
+
 httpd_handle_t server = NULL;
 // --- Server Start ---
 void start_web_portal()
@@ -212,6 +251,13 @@ void start_web_portal()
 
         httpd_uri_t storage_uri = {.uri = "/storage", .method = HTTP_GET, .handler = storage_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &storage_uri);
+
+        httpd_uri_t solar_uri = {
+            .uri = "/solar",
+            .method = HTTP_GET,
+            .handler = solar_get_handler,
+            .user_ctx = NULL};
+        httpd_register_uri_handler(server, &solar_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
     }
