@@ -32,6 +32,17 @@ See ShipREADME.md for project overview and details.
 #include "sdkconfig.h"
 #include "main.h"
 
+#include "driver/i2s_std.h" // For I2S audio output to the MAX98357A
+
+// --- I2S Audio Bus (The Digital Stream) ---
+#define I2S_BCLK_IO      (GPIO_NUM_7)   // Bit Clock: Synchronizes each individual bit of audio data.
+#define I2S_LRC_IO       (GPIO_NUM_15)  // Left/Right Clock (Word Select): Tells the amp which "word" is Left vs Right channel.
+#define I2S_DIN_IO       (GPIO_NUM_6)   // Data In (to Amp): The actual digital audio signal stream being sent to the MAX98357A.
+
+// --- Amplifier Control (Hardware Logic) ---
+#define SPEAKER_SD_IO    (GPIO_NUM_4)   // Shutdown Control: Drive HIGH to enable the amp; drive LOW for silent/low-power mode.
+#define SPEAKER_GAIN_IO  (GPIO_NUM_5)   // Gain Adjust: Controls volume floor. Set LOW (GND) for 12dB; leave floating or HIGH for higher gain.
+
 static const char *TAG = "ShipEffects";
 
 // WiFi Macros from your menuconfig
@@ -64,6 +75,8 @@ RTC_DATA_ATTR bool time_is_set = false;
 
 // SD Card Handle
 static sdmmc_card_t *card = NULL;
+// I2S Audio Channel Handle
+static i2s_chan_handle_t tx_handle = NULL;
 
 
 // 1. WiFi Handler
@@ -290,9 +303,63 @@ extern "C" bool is_solar_night(struct tm *ti) {
     return false;
 }
 
+// 7. Speaker Hardware Init
+void init_speaker_hardware() {
+    ESP_LOGI(TAG, "Initializing MAX98357A Amplifier Pins...");
 
+    // 1. Ensure Gain is set before waking up
+    // Set Gain to 6dB (GND)
+    gpio_reset_pin(SPEAKER_GAIN_IO);
+    gpio_set_direction(SPEAKER_GAIN_IO, GPIO_MODE_OUTPUT);
+    gpio_set_level(SPEAKER_GAIN_IO, 1); 
 
-// 7. MAIN APPLICATION ENTRY POINT
+    // 2. Wake up the Amp (SD Pin)
+    gpio_reset_pin(SPEAKER_SD_IO);
+    gpio_set_direction(SPEAKER_SD_IO, GPIO_MODE_OUTPUT);
+    
+    // Hold it LOW for a split second to settle
+    gpio_set_level(SPEAKER_SD_IO, 0);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    // Drive HIGH to enable
+    gpio_set_level(SPEAKER_SD_IO, 1); 
+    ESP_LOGI(TAG, "Amplifier Active (SD High)");
+}
+
+// 8. I2S Driver Init
+void init_i2s_driver() {
+    ESP_LOGI(TAG, "Configuring I2S for MAX98357A...");
+
+    // 1. Create the Channel Configuration (Note the change to 'I2S_CHANNEL_DEFAULT_CONFIG')
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
+
+    // 2. Set the Standard Mode Configuration
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100), 
+        // Note the change to 'I2S_DATA_BIT_WIDTH_16BIT' below
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,    
+            .bclk = I2S_BCLK_IO,        
+            .ws   = I2S_LRC_IO,         
+            .dout = I2S_DIN_IO,         
+            .din  = I2S_GPIO_UNUSED,    
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv   = false,
+            },
+        },
+    };
+
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
+    
+    ESP_LOGI(TAG, "I2S Driver Enabled and Clocks active.");
+}
+
+// 8. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
 extern "C" void app_main()
 {
@@ -306,10 +373,12 @@ extern "C" void app_main()
 
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
-    init_sd_card();
-    init_wifi();
-    init_sntp();
-    start_web_portal();
+    init_sd_card();  // SD Card must be initialized before the web portal, which may serve files from it.  
+    init_speaker_hardware(); // Power up the amplifier hardware before starting the I2S driver to ensure stable clock generation.
+    init_i2s_driver(); // Initialize the I2S driver after the amplifier is awake to ensure stable clock generation for the MAX98357A.
+    init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
+    init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
+    start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
