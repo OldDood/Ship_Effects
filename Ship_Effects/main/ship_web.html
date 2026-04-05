@@ -14,9 +14,14 @@
         .btn { padding: 8px 12px; cursor: pointer; border: none; border-radius: 4px; color: white; text-decoration: none; font-size: 14px; display: inline-block; }
         .btn-upload { background-color: #28a745; margin-top: 10px; }
         .btn-delete { background-color: #dc3545; }
+        .btn-cancel { background-color: #6c757d; margin-left: 10px; display: none; padding: 4px 8px; font-size: 12px; }
         .btn-download { background-color: #007bff; margin-right: 5px; }
-        .storage-info { font-size: 13px; color: #666; margin-top: 10px; border-top: 1px solid #eee; pt: 10px; }
-        #status { margin-top: 10px; font-weight: bold; color: #d9534f; }
+        .storage-info { font-size: 13px; color: #666; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px; }
+        #status-area { margin-top: 10px; display: flex; align-items: center; }
+        #status { font-weight: bold; color: #d9534f; }
+        
+        .progress-container { width: 100%; background-color: #eee; border-radius: 4px; margin-top: 12px; display: none; }
+        .progress-bar { width: 0%; height: 12px; background-color: #28a745; border-radius: 4px; transition: width 0.1s; }
     </style>
 </head>
 <body>
@@ -28,8 +33,16 @@
         <strong>Upload New Effect (.mp3)</strong><br>
         <input type="file" id="fileInput" accept=".mp3" style="margin-top:10px;">
         <br>
-        <button class="btn btn-upload" onclick="uploadFile()">Upload to SD Card</button>
-        <div id="status"></div>
+        <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
+        
+        <div class="progress-container" id="progCont">
+            <div class="progress-bar" id="progBar"></div>
+        </div>
+        
+        <div id="status-area">
+            <span id="status"></span>
+            <button class="btn btn-cancel" id="cancelBtn" onclick="cancelUpload()">Cancel</button>
+        </div>
     </div>
 
     <div class="file-list section">
@@ -42,6 +55,8 @@
 </div>
 
 <script>
+    let currentXhr = null; // Global reference for the cancel function
+
     function updateStatus(msg) {
         document.getElementById('status').innerText = msg;
     }
@@ -56,8 +71,6 @@
             data.files.forEach(file => {
                 const item = document.createElement('div');
                 item.className = 'file-item';
-                
-                // Keep UI clean with decoded names
                 const displayName = decodeURIComponent(file.name);
 
                 item.innerHTML = `
@@ -75,27 +88,71 @@
         }
     }
 
-    async function uploadFile() {
+    function uploadFile() {
         const fileInput = document.getElementById('fileInput');
+        const progCont = document.getElementById('progCont');
+        const progBar = document.getElementById('progBar');
+        const cancelBtn = document.getElementById('cancelBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        
         if (fileInput.files.length === 0) {
             updateStatus("Please select an .mp3 file first.");
             return;
         }
+
         const file = fileInput.files[0];
-        updateStatus("Uploading: " + file.name + "...");
-        try {
-            const response = await fetch(`/upload?file=${file.name}`, {
-                method: 'POST',
-                body: file
-            });
-            if (response.ok) {
+        currentXhr = new XMLHttpRequest();
+
+        progCont.style.display = 'block';
+        progBar.style.width = '0%';
+        progBar.style.backgroundColor = '#28a745';
+        cancelBtn.style.display = 'inline-block';
+        uploadBtn.disabled = true; // Prevent double-clicking
+        updateStatus("Preparing...");
+
+        currentXhr.upload.onprogress = function(event) {
+            if (event.lengthComputable) {
+                const percent = (event.loaded / event.total) * 100;
+                progBar.style.width = percent + '%';
+                updateStatus(`Uploading: ${Math.round(percent)}%`);
+            }
+        };
+
+        currentXhr.onload = function() {
+            uploadBtn.disabled = false;
+            cancelBtn.style.display = 'none';
+            if (currentXhr.status === 200) {
                 updateStatus("Upload Successful!");
+                setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 3000);
                 fetchFiles();
             } else {
-                updateStatus("Upload Failed.");
+                updateStatus("Upload Failed (Status: " + currentXhr.status + ")");
+                progBar.style.backgroundColor = "#dc3545";
             }
-        } catch (e) {
-            updateStatus("Error during upload.");
+        };
+
+        currentXhr.onerror = function() {
+            uploadBtn.disabled = false;
+            cancelBtn.style.display = 'none';
+            updateStatus("Network Error.");
+            progBar.style.backgroundColor = "#dc3545";
+        };
+
+        currentXhr.onabort = function() {
+            uploadBtn.disabled = false;
+            cancelBtn.style.display = 'none';
+            updateStatus("Upload Cancelled.");
+            progBar.style.backgroundColor = "#6c757d"; // Gray bar for cancelled
+            setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 2000);
+        };
+
+        currentXhr.open("POST", `/upload?file=${encodeURIComponent(file.name)}`, true);
+        currentXhr.send(file);
+    }
+
+    function cancelUpload() {
+        if (currentXhr) {
+            currentXhr.abort();
         }
     }
 
@@ -120,7 +177,6 @@
         } catch (e) {}
     }
 
-    // Load file list on startup
     fetchFiles();
 </script>
 
