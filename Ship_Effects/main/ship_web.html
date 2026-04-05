@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ship Effects Control</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <style>
+        body { font-family: Arial; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
+        .section { margin-bottom: 20px; padding: 15px; background: #fafafa; border-radius: 5px; border: 1px solid #eee; }
+        .file-list { margin-top: 10px; }
+        .file-item { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eee; align-items: center; }
+        .btn { padding: 8px 12px; cursor: pointer; border: none; border-radius: 4px; color: white; text-decoration: none; font-size: 14px; display: inline-block; }
+        .btn-upload { background-color: #28a745; margin-top: 10px; }
+        .btn-delete { background-color: #dc3545; }
+        .btn-download { background-color: #007bff; margin-right: 5px; }
+        .storage-info { font-size: 13px; color: #666; margin-top: 10px; border-top: 1px solid #eee; pt: 10px; }
+        #status { margin-top: 10px; font-weight: bold; color: #d9534f; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Ship Audio Management</h2>
+
+    <div class="section">
+        <strong>Upload New Effect (.mp3)</strong><br>
+        <input type="file" id="fileInput" accept=".mp3" style="margin-top:10px;">
+        <br>
+        <button class="btn btn-upload" onclick="uploadFile()">Upload to SD Card</button>
+        <div id="status"></div>
+    </div>
+
+    <div class="file-list section">
+        <strong>Files on SD Card:</strong>
+        <div id="fileList">Scanning...</div>
+        <div class="storage-info" id="storage">Loading storage info...</div>
+    </div>
+
+    <button class="btn btn-delete" style="width:100%; margin-top:10px;" onclick="deleteAll()">Delete All Files (Format SD)</button>
+</div>
+
+<script>
+    function updateStatus(msg) {
+        document.getElementById('status').innerText = msg;
+    }
+
+    async function fetchFiles() {
+        try {
+            const response = await fetch('/list');
+            const data = await response.json();
+            const listDiv = document.getElementById('fileList');
+            listDiv.innerHTML = '';
+
+            data.files.forEach(file => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                
+                // Keep UI clean with decoded names
+                const displayName = decodeURIComponent(file.name);
+
+                item.innerHTML = `
+                    <span>${displayName} (${(file.size / 1024).toFixed(1)} KB)</span>
+                    <div>
+                        <a href="/download?file=${file.name}" target="_blank" class="btn btn-download">Play</a>
+                        <button class="btn btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
+                    </div>
+                `;
+                listDiv.appendChild(item);
+            });
+            updateStorage();
+        } catch (e) {
+            document.getElementById('fileList').innerText = "Failed to load files.";
+        }
+    }
+
+    async function uploadFile() {
+        const fileInput = document.getElementById('fileInput');
+        if (fileInput.files.length === 0) {
+            updateStatus("Please select an .mp3 file first.");
+            return;
+        }
+        const file = fileInput.files[0];
+        updateStatus("Uploading: " + file.name + "...");
+        try {
+            const response = await fetch(`/upload?file=${file.name}`, {
+                method: 'POST',
+                body: file
+            });
+            if (response.ok) {
+                updateStatus("Upload Successful!");
+                fetchFiles();
+            } else {
+                updateStatus("Upload Failed.");
+            }
+        } catch (e) {
+            updateStatus("Error during upload.");
+        }
+    }
+
+    async function deleteFile(name) {
+        if (!confirm("Delete " + decodeURIComponent(name) + "?")) return;
+        await fetch(`/delete?file=${name}`);
+        fetchFiles();
+    }
+
+    async function deleteAll() {
+        if (!confirm("Are you sure you want to wipe the SD card?")) return;
+        await fetch('/delete_all');
+        fetchFiles();
+    }
+
+    async function updateStorage() {
+        try {
+            const response = await fetch('/storage');
+            const data = await response.json();
+            document.getElementById('storage').innerText =
+                `Storage: ${Math.round(data.free / 1024 / 1024)} MB free of ${Math.round(data.total / 1024 / 1024)} MB`;
+        } catch (e) {}
+    }
+
+    // Load file list on startup
+    fetchFiles();
+</script>
+
+</body>
+</html>

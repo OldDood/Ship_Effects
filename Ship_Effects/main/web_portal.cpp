@@ -11,21 +11,35 @@
 
 extern const uint8_t web_portal_html_start[] asm("_binary_web_portal_html_start");
 extern const uint8_t web_portal_html_end[] asm("_binary_web_portal_html_end");
+
 static const char *TAG = "WebPortal";
+httpd_handle_t server = NULL;
 
+// --- External Solar Functions ---
 extern "C" bool is_solar_night(struct tm *ti);
-extern "C" int get_sunrise_mins(); // Adjust based on your actual function names
+extern "C" int get_sunrise_mins(); 
 extern "C" int get_sunset_mins();
-
-
 
 // --- Handlers ---
 
 esp_err_t index_get_handler(httpd_req_t *req)
 {
-    const size_t html_len = web_portal_html_end - web_portal_html_start;
+    ESP_LOGW("DEBUG", "===> ROOT HANDLER TRIGGERED <===");
+extern const uint8_t web_portal_html_start[] asm("_binary_ship_web_html_start");
+extern const uint8_t web_portal_html_end[]   asm("_binary_ship_web_html_end");
+    // Force a hard pointer check
+    const char* data = (const char*)web_portal_html_start;
+    size_t len = web_portal_html_end - web_portal_html_start;
+   // --- ADD THIS LINE HERE ---
+    ESP_LOGW("DEBUG", "Address of data: %p", (void*)web_portal_html_start);
+    // -
+    // DIAGNOSTIC: If the first 5 characters aren't HTML, 
+    // the linker is definitely pointing to your .cpp file.
+
+    ESP_LOGI(TAG, "First 5 bytes of index: %.5s", data);
+
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, (const char *)web_portal_html_start, html_len);
+    return httpd_resp_send(req, data, len);
 }
 
 esp_err_t list_get_handler(httpd_req_t *req)
@@ -41,12 +55,13 @@ esp_err_t list_get_handler(httpd_req_t *req)
         {
             if (ent->d_type == DT_REG)
             {
-                char filepath[300];
+                char filepath[1024];
                 struct stat st;
                 snprintf(filepath, sizeof(filepath), "/sdcard/%s", ent->d_name);
                 long size = 0;
                 if (stat(filepath, &st) == 0)
                     size = st.st_size;
+                
                 char entry_str[400];
                 snprintf(entry_str, sizeof(entry_str), "%s{\"name\":\"%s\",\"size\":%ld}",
                          first ? "" : ",", ent->d_name, size);
@@ -58,6 +73,39 @@ esp_err_t list_get_handler(httpd_req_t *req)
     }
     httpd_resp_sendstr_chunk(req, "]}");
     httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
+esp_err_t upload_post_handler(httpd_req_t *req)
+{
+    char filepath[300];
+    // We expect the filename in the query string: /upload?file=filename.mp3
+    char query[256], filename[256];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "file", filename, sizeof(filename)) == ESP_OK) {
+            snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
+        } else {
+            return httpd_resp_send_404(req);
+        }
+    } else {
+        return httpd_resp_send_404(req);
+    }
+
+    FILE *fd = fopen(filepath, "wb");
+    if (!fd) {
+        ESP_LOGE(TAG, "Failed to create file : %s", filepath);
+        return httpd_resp_send_500(req);
+    }
+
+    char *buf = (char*)malloc(4096);
+    int received;
+    while ((received = httpd_req_recv(req, buf, 4096)) > 0) {
+        fwrite(buf, 1, received, fd);
+    }
+    fclose(fd);
+    free(buf);
+
+    httpd_resp_sendstr(req, "File uploaded successfully");
     return ESP_OK;
 }
 
@@ -80,7 +128,8 @@ esp_err_t download_get_handler(httpd_req_t *req)
     if (f == NULL)
         return httpd_resp_send_404(req);
 
-    httpd_resp_set_type(req, "image/jpeg");
+    // Set to audio/mpeg for MP3 effects
+    httpd_resp_set_type(req, "audio/mpeg");
 
     const size_t chunk_size = 16384;
     char *buffer = (char *)malloc(chunk_size);
@@ -124,8 +173,6 @@ esp_err_t delete_get_handler(httpd_req_t *req)
     return httpd_resp_send_404(req);
 }
 
-
-
 esp_err_t delete_all_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "Web request: Delete All Files");
@@ -158,7 +205,6 @@ esp_err_t storage_get_handler(httpd_req_t *req)
 
     if (res == FR_OK)
     {
-        // Use uint64_t to prevent overflow on larger SD cards
         uint64_t tot_sect = (uint64_t)(fs->n_fatent - 2) * fs->csize;
         uint64_t fre_sect = (uint64_t)fre_clust * fs->csize;
         total_bytes = tot_sect * 512;
@@ -173,22 +219,15 @@ esp_err_t storage_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, json_response);
 }
 
-// You'll need to make sure these variables or functions
-// from your solar math are accessible here.
-extern "C" bool is_solar_night(struct tm *ti);
-extern "C" int get_sunrise_mins(); // Adjust based on your actual function names
-extern "C" int get_sunset_mins();
-
 esp_err_t solar_get_handler(httpd_req_t *req)
 {
     struct tm ti;
     time_t now;
     char json_response[128];
 
-    time(&now);                // Get the current Unix timestamp
-    localtime_r(&now, &ti);    // Convert it to local time structure
+    time(&now);
+    localtime_r(&now, &ti);
 
-    // Check if the year is 1970 (meaning NTP hasn't synced yet)
     if (ti.tm_year < (2020 - 1900)) {
         snprintf(json_response, sizeof(json_response), "{\"error\":\"Time not synced via NTP\"}");
     } else {
@@ -207,8 +246,8 @@ esp_err_t solar_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, json_response);
 }
 
-httpd_handle_t server = NULL;
-// --- Server Start ---
+// --- Server Control ---
+
 void start_web_portal()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -218,12 +257,14 @@ void start_web_portal()
 
     if (httpd_start(&server, &config) == ESP_OK)
     {
-        // Every URI struct must have .user_ctx explicitly initialized to NULL
         httpd_uri_t index_uri = {.uri = "/", .method = HTTP_GET, .handler = index_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &index_uri);
 
         httpd_uri_t list_uri = {.uri = "/list", .method = HTTP_GET, .handler = list_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &list_uri);
+
+        httpd_uri_t upload_uri = {.uri = "/upload", .method = HTTP_POST, .handler = upload_post_handler, .user_ctx = NULL};
+        httpd_register_uri_handler(server, &upload_uri);
 
         httpd_uri_t download_uri = {.uri = "/download", .method = HTTP_GET, .handler = download_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &download_uri);
@@ -237,23 +278,20 @@ void start_web_portal()
         httpd_uri_t storage_uri = {.uri = "/storage", .method = HTTP_GET, .handler = storage_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &storage_uri);
 
-        httpd_uri_t solar_uri = {
-            .uri = "/solar",
-            .method = HTTP_GET,
-            .handler = solar_get_handler,
-            .user_ctx = NULL};
+        httpd_uri_t solar_uri = {.uri = "/solar", .method = HTTP_GET, .handler = solar_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &solar_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
     }
 }
+
 void stop_web_portal()
 {
     if (server != NULL)
     {
         if (httpd_stop(server) == ESP_OK)
         {
-            server = NULL; // Clear handle after successful stop
+            server = NULL;
             ESP_LOGI(TAG, "Server stopped successfully.");
         }
         else

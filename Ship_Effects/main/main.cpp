@@ -32,7 +32,7 @@ See ShipREADME.md for project overview and details.
 #include "sdkconfig.h"
 #include "main.h"
 
-static const char *TAG = "TrailCam";
+static const char *TAG = "ShipEffects";
 
 // WiFi Macros from your menuconfig
 #define WIFI_SSID CONFIG_WIFI_SSID
