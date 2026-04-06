@@ -1,23 +1,23 @@
 ### 🚢 ShipEffects S3 v1.1: Audio & Logic Engine
 
-A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3**. This version marks the successful transition from Camera functionality to a dedicated **I2S Digital Audio** and **Solar-aware** control system.
+A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3 CAM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
 
 ## 📦 Component List (BOM)
 
 ### Core Hardware
-* **Microcontroller:** Freenove ESP32-S3-WROOM (Camera Module variant).
+* **Microcontroller:** Freenove ESP32-S3-WROOM (Camera Module variant with on board SSD Card Reader). The camera is not used in this project.
 * **Audio Amplifier:** MAX98357A I2S Class-D Mono Amp.
 * **Storage:** Micro SD Card (formatted to FAT32, up to 32GB supported).
 * **Speaker:** 4Ω or 8Ω nominal impedance (connected to MAX98357A output).
 
-### Software Dependencies (ESP-IDF)
+### Software Dependencies (ESP-IDF v5.3+)
 To compile this project, the following components must be declared in your `main/CMakeLists.txt`:
-* `esp_driver_i2s`: Required for the v5.3+ I2S Standard Driver.
-* `esp_camera`: Necessary to manage the S3-CAM pin initialization.
+* `esp_driver_i2s`: Required for the I2S Standard Driver.
 * `fatfs` & `esp_vfs`: For the Virtual File System and SD card management.
 * `sdmmc`: For the 1-bit high-stability SD interface.
+* `esp_http_server`: Powers the remote management portal.
 
 ---
 
@@ -32,46 +32,55 @@ To compile this project, the following components must be declared in your `main
 | **I2S LRC** | `15` | **Word Select.** Measured at 1.64V (Active). |
 | **I2S DIN** | `6` | **Data Out.** Digital audio stream to MAX98357A. |
 | **AMP SD** | `4` | **Shutdown.** Measured at 3V (Amp Active). |
-| **AMP GAIN** | `5` | **Gain.** Measured at 3.165V (**6dB** safety floor). |
+| **AMP GAIN** | `5` | **Gain.** Measured at 3.165V (**12dB** standard floor). |
 
 ---
 
-## 🧪 Diagnostic Suite: `test_speaker_repeater`
-To verify hardware integrity and signal-to-noise ratio (SNR) without SD card overhead, a baseline diagnostic is included:
-* **Waveform:** 441Hz Square Wave (Digital $8000$ to $-8000$ swing).
-* **Pattern:** 2-second burst followed by 28 seconds of "Silent Sleep."
-* **Duty Cycle:** 4 repeated cycles (Total duration: 2 minutes).
-* **Hardware State:** Calls `i2s_channel_disable()` during silence to verify amplifier shutdown and clock cessation.
+## ⚙️ Project Configuration (`menuconfig`)
+The project now utilizes `Kconfig.projbuild` for rapid field adjustments without code changes:
+* **WiFi Credentials:** SSID and Password managed via the UI.
+* **Audio Mode Selector:** 
+    1. **Internal (1):** Diagnostic Sine Sweep (300Hz–2400Hz).
+    2. **WAV (2):** Diagnostic SD Card Playback (e.g., `ship_horn.wav`).
+    3. **MP3 (3):** Compressed storage playback. (This is normal operating mode)
+
+---
+
+## 🧪 Audio Execution Modes
+### 1. Diagnostic Suite: `test_speaker_sine_repeater`
+Verifies audio path integrity and SNR:
+* **Waveform:** Soft-start Sine Wave (300Hz, 600Hz, 1200Hz, 2400Hz).
+* **Pattern:** 2-second steps per frequency.
+* **Silence:** 15-second "Silent Sleep" between 4 major cycles.
+
+### 2. High-Fidelity Playback: `play_wav_file`
+Streams raw uncompressed audio from the SD card:
+* **Format:** 16-bit PCM WAV (44.1kHz / Mono optimized).
+* **Automation:** Configured to loop **4 times** with **15-second intervals**.
+* **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
 
 ---
 
 ## 🚀 Execution Flow (`app_main`)
 1.  **NVS Init:** Prepares flash for WiFi credentials.
-2.  **Audio Setup:** Initializes MAX98357A pins (**SD/GPIO 4** and **Gain/GPIO 5**).
-3.  **Digital Bus:** Mounts SD Card and starts I2S Clocks (**GPIO 7 & 15**).
-4.  **Baseline Test:** (Optional) Executes `test_speaker_repeater` to verify audio path.
-5.  **Network:** Connects WiFi and synchronizes time via SNTP.
-6.  **Persistence:** Restores wall-clock from RTC memory if waking from sleep.
+2.  **Peripheral Warm-up:** Initializes SD Card (**GPIO 38-40**) and Amplifier (**GPIO 4-5**) hardware.
+3.  **Digital Bus:** Starts I2S Clocks (**GPIO 7 & 15**) and attaches the driver.
+4.  **Network & Time:** Connects WiFi and synchronizes ACST time via SNTP.
+5.  **Web Portal:** Launches the management interface for remote telemetry and file control.
+6.  **Mode Logic:** Evaluates Kconfig selection and executes the chosen Audio Engine.
 
 ---
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
 * **Logic:** Calculates daily sunrise/sunset to drive autonomous ship lighting.
-* **Night Detection:** Uses a **15-minute "True Dark" buffer** post-sunset.
-
----
-
-## 🌐 Web Management Portal
-* **Function:** Real-time MP3 upload with XHR progress tracking.
-* **Storage Telemetry:** Displays remaining SD capacity (MB) vs. total volume.
-* **File Control:** Integrated Play, Delete, and Bulk Wipe utilities.
+* **Night Detection:** Uses a **15-minute "True Dark" buffer** post-sunset for "Lights On" triggers.
 
 ---
 
 ## 💾 Persistent RTC Memory Map
-* `last_success_time_sec`: Tracks timing for recurring effects.
-* `sleep_anchor_time`: The master `timeval` reference.
-* `time_is_set`: Boolean flag for valid time restoration.
+* `last_success_time_sec`: Tracks timing for recurring effects across light sleeps.
+* `sleep_anchor_time`: The master `timeval` reference for clock restoration.
+* `time_is_set`: Boolean flag for valid time restoration after wakeup.
 
 ---

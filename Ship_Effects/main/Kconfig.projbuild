@@ -1,5 +1,5 @@
-menu "WiFi Configuration"
 
+menu "WiFi Configuration"
     config WIFI_SSID
         string "WiFi SSID"
         default "myssid"
@@ -11,5 +11,28 @@ menu "WiFi Configuration"
         default "mypassword"
         help
             Password of your WiFi network.
+endmenu
 
+menu "Ship Effect Sound Configuration"
+    choice SHIP_SOUND_MODE
+        prompt "Sound Source Mode"
+        default SHIP_SOUND_INTERNAL_DIAGNOSTIC
+        help
+            Select the active audio engine for the Ship Effects S3.
+
+        config SHIP_SOUND_INTERNAL_DIAGNOSTIC
+            bool "Internal (1) - Sine/Square Diagnostic"
+            help
+                Generates math-based tones for hardware testing.
+
+        config SHIP_SOUND_WAV_MODE
+            bool "WAV (2) - Raw High Fidelity"
+            help
+                Streams uncompressed .wav files from SD Card.
+
+        config SHIP_SOUND_MP3_MODE
+            bool "Normal MP3 (3) - Compressed Storage"
+            help
+                Decodes .mp3 files from SD Card.
+    endchoice
 endmenu

@@ -358,44 +358,95 @@ void init_i2s_driver() {
 } // <--- Bracket closed correctly here
 
 
-void test_speaker_beep() {
-    const int num_cycles = 4;
-    const uint32_t beep_duration_ms = 2000;  // 2 second beep
-    const uint32_t interval_ms = 30000;      // 30 seconds total interval
+// 7a. Internal Diagnostic Test Function
+void test_speaker_sine_repeater() {
+    const int sample_rate = 44100;
+    const int num_steps = 4;
+    const int num_cycles = 4; 
+    float frequencies[num_steps] = {300.0f, 600.0f, 1200.0f, 2400.0f};// Test frequencies in Hz that are easily audible and distinct, covering a range of the spectrum. Adjust as needed.
+    
+    const int buffer_size = 512; // Number of samples per buffer (must be a multiple of the frame size for 16-bit mono)
+    int16_t samples[buffer_size];// Buffer to hold the generated audio samples
+    size_t bytes_written;// To capture how many bytes were actually written to the I2S driver
 
-    // 1. Setup the square wave buffer (Baseline)
-    const int samples_count = 100;
-    int16_t samples[samples_count];
-    for (int i = 0; i < samples_count; i++) {
-        samples[i] = (i < 50) ? 8000 : -8000;
-    }
+    // Use a local phase variable we can reset
+    float phase = 0.0f; 
+    const float amplitude = 12000.0f; // Amplitude for 16-bit audio (max is 32767, but we leave headroom to avoid clipping)
 
+    ESP_LOGI(TAG, "Starting v1.4 Soft-Start Sine Repeater...");
+    // This loop will run through the specified frequencies, playing each for 2 seconds, and repeat the whole sequence for the number of cycles defined.
     for (int cycle = 1; cycle <= num_cycles; cycle++) {
-        ESP_LOGI(TAG, "Starting Cycle %d of %d...", cycle, num_cycles);
+        ESP_LOGI(TAG, "--- Cycle %d of %d ---", cycle, num_cycles);
 
-        // Ensure I2S is enabled for this beep
+        // --- THE CLICK FIX ---
+        // Force phase to 0 before starting the burst. 
+        // This ensures the first sample is sin(0) = 0.
+        phase = 0.0f; 
+
         i2s_channel_enable(tx_handle);
 
-        size_t bytes_written;
-        uint32_t start_time = esp_log_timestamp();
-
-        // 2. The Beep
-        while (esp_log_timestamp() - start_time < beep_duration_ms) {
-            i2s_channel_write(tx_handle, samples, sizeof(samples), &bytes_written, portMAX_DELAY);
+        for (int f = 0; f < num_steps; f++) {
+            float freq = frequencies[f];
+            uint32_t step_start = esp_log_timestamp();
+            // Generate and play the sine wave for this frequency for 2 seconds
+            while (esp_log_timestamp() - step_start < 2000) {
+                for (int i = 0; i < buffer_size; i++) {
+                    samples[i] = (int16_t)(amplitude * sinf(phase));// Generate the sine wave sample
+                    phase += (2.0f * M_PI * freq) / (float)sample_rate;// Increment the phase for the next sample
+                    if (phase >= 2.0f * M_PI) phase -= 2.0f * M_PI;// Wrap the phase to prevent it from growing indefinitely, which can cause precision issues over time.
+                }
+                i2s_channel_write(tx_handle, samples, sizeof(samples), &bytes_written, portMAX_DELAY);
+            }
         }
 
-        // 3. Stop the hardware noise immediately
-        i2s_channel_disable(tx_handle);
-        ESP_LOGI(TAG, "Cycle %d Beep Complete. Waiting 30s...", cycle);
-
-        // 4. Wait until the next cycle (unless it's the last one)
+        i2s_channel_disable(tx_handle);// Disable the I2S output during the silent period to prevent "hiss" and save power.
+        // If this isn't the last cycle, wait 15 seconds before starting the next one
         if (cycle < num_cycles) {
-            // Subtract the beep duration from the interval so the *start* // of each beep happens exactly every 30 seconds.
-            vTaskDelay(pdMS_TO_TICKS(interval_ms - beep_duration_ms));
+            ESP_LOGI(TAG, "Waiting 15 seconds...");
+            vTaskDelay(pdMS_TO_TICKS(15000));
         }
     }
+}
+// 7b. WAV Playback Test Function
+void play_wav_file(const char* path, int num_loops) {
+    for (int i = 1; i <= num_loops; i++) {
+        FILE* f = fopen(path, "rb");// Open the WAV file in binary mode
+        if (f == NULL) {
+            ESP_LOGE(TAG, "Failed to open file: %s", path);
+            return;
+        }
 
-    ESP_LOGI(TAG, "All 4 Cycles Complete.");
+        ESP_LOGI(TAG, "--- Playing WAV Loop %d of %d ---", i, num_loops);
+        
+        // Skip the 44-byte WAV header
+        fseek(f, 44, SEEK_SET);// Move the file pointer past the header to the start of audio data
+
+        const int chunk_size = 1024;
+        int16_t* buffer = (int16_t*)malloc(chunk_size);
+        size_t bytes_read;
+        size_t bytes_written;
+
+        // Enable I2S only while playing to save power/reduce noise
+        i2s_channel_enable(tx_handle);
+
+        while ((bytes_read = fread(buffer, 1, chunk_size, f)) > 0) {
+            i2s_channel_write(tx_handle, buffer, bytes_read, &bytes_written, portMAX_DELAY);
+        }
+
+        // Clean up current file handle
+        free(buffer);// Free the audio buffer
+        fclose(f);// Close the file after playback
+        
+        // Disable I2S during the silent period to prevent "hiss"
+        i2s_channel_disable(tx_handle);
+
+        // If this wasn't the last loop, wait 15 seconds
+        if (i < num_loops) {
+            ESP_LOGI(TAG, "WAV finished. Waiting 15 seconds before next loop...");
+            vTaskDelay(pdMS_TO_TICKS(15000));
+        }
+    }
+    ESP_LOGI(TAG, "All %d WAV loops completed.", num_loops);
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -415,10 +466,35 @@ extern "C" void app_main()
     init_sd_card();  // SD Card must be initialized before the web portal, which may serve files from it.  
     init_speaker_hardware(); // Power up the amplifier hardware before starting the I2S driver to ensure stable clock generation.
     init_i2s_driver(); // Initialize the I2S driver after the amplifier is awake to ensure stable clock generation for the MAX98357A.
-    test_speaker_beep(); // Test the speaker with a simple beep sound.
     init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
     init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
+
+// 2. Map Kconfig Booleans to our Case Selector
+    int sound_mode = 3; // Default to MP3
+
+    #if CONFIG_SHIP_SOUND_INTERNAL_DIAGNOSTIC // This mode generates a simple sine wave tone that steps up in frequency every 2 seconds, cycling through 300Hz, 600Hz, 1200Hz, and 2400Hz. It repeats this pattern 4 times with a 15-second pause in between. This is ideal for testing the speaker hardware and I2S configuration without needing any audio files on the SD card.
+        sound_mode = 1;
+    #elif CONFIG_SHIP_SOUND_WAV_MODE // This mode plays a WAV file from the SD card. The file should be a mono 16-bit PCM WAV for best compatibility with the I2S configuration. This mode is great for testing actual audio playback and can be used to play your ship horn sound effect.
+        sound_mode = 2;
+    #elif CONFIG_SHIP_SOUND_MP3_MODE // This mode plays an MP3 file from the SD card.
+    #endif
+
+    // 3. Execute based on selection
+    switch (sound_mode) {
+        case 1:// Internal Diagnostic Mode
+            ESP_LOGI("SHIP", "Mode 1: Internal Diagnostics (Sine/Square)");
+            test_speaker_sine_repeater(); 
+            break;
+        case 2:// WAV Playback Mode
+            ESP_LOGI("SHIP", "Mode 2: WAV Playback");
+            play_wav_file("/sdcard/ship_horn.wav", 4);
+            break;
+        case 3://
+            ESP_LOGI("SHIP", "Mode 3: MP3 Playback (Default)");
+            // play_mp3_file("/sdcard/engine_hum.mp3");
+            break;
+    }
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
