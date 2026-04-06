@@ -1,4 +1,3 @@
-
 ### 🚢 ShipEffects S3 v1.1: Audio & Logic Engine
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3**. This version marks the successful transition from Camera functionality to a dedicated **I2S Digital Audio** and **Solar-aware** control system.
@@ -37,6 +36,25 @@ To compile this project, the following components must be declared in your `main
 
 ---
 
+## 🧪 Diagnostic Suite: `test_speaker_repeater`
+To verify hardware integrity and signal-to-noise ratio (SNR) without SD card overhead, a baseline diagnostic is included:
+* **Waveform:** 441Hz Square Wave (Digital $8000$ to $-8000$ swing).
+* **Pattern:** 2-second burst followed by 28 seconds of "Silent Sleep."
+* **Duty Cycle:** 4 repeated cycles (Total duration: 2 minutes).
+* **Hardware State:** Calls `i2s_channel_disable()` during silence to verify amplifier shutdown and clock cessation.
+
+---
+
+## 🚀 Execution Flow (`app_main`)
+1.  **NVS Init:** Prepares flash for WiFi credentials.
+2.  **Audio Setup:** Initializes MAX98357A pins (**SD/GPIO 4** and **Gain/GPIO 5**).
+3.  **Digital Bus:** Mounts SD Card and starts I2S Clocks (**GPIO 7 & 15**).
+4.  **Baseline Test:** (Optional) Executes `test_speaker_repeater` to verify audio path.
+5.  **Network:** Connects WiFi and synchronizes time via SNTP.
+6.  **Persistence:** Restores wall-clock from RTC memory if waking from sleep.
+
+---
+
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
 * **Logic:** Calculates daily sunrise/sunset to drive autonomous ship lighting.
@@ -51,19 +69,9 @@ To compile this project, the following components must be declared in your `main
 
 ---
 
-## 🚀 Execution Flow (`app_main`)
-1.  **NVS Init:** Prepares flash for WiFi credentials.
-2.  **Audio Setup:** Initializes MAX98357A pins (SD and Gain).
-3.  **Digital Bus:** Mounts SD Card and starts I2S Clocks (GPIO 7 & 15).
-4.  **Network:** Connects WiFi and synchronizes time via SNTP.
-5.  **Persistence:** Restores wall-clock from RTC memory if waking from sleep.
-
----
-
 ## 💾 Persistent RTC Memory Map
 * `last_success_time_sec`: Tracks timing for recurring effects.
 * `sleep_anchor_time`: The master `timeval` reference.
 * `time_is_set`: Boolean flag for valid time restoration.
 
---
-
+---

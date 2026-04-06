@@ -34,6 +34,7 @@ See ShipREADME.md for project overview and details.
 
 #include "driver/i2s_std.h" // For I2S audio output to the MAX98357A
 
+
 // --- I2S Audio Bus (The Digital Stream) ---
 #define I2S_BCLK_IO      (GPIO_NUM_7)   // Bit Clock: Synchronizes each individual bit of audio data.
 #define I2S_LRC_IO       (GPIO_NUM_15)  // Left/Right Clock (Word Select): Tells the amp which "word" is Left vs Right channel.
@@ -308,7 +309,6 @@ void init_speaker_hardware() {
     ESP_LOGI(TAG, "Initializing MAX98357A Amplifier Pins...");
 
     // 1. Ensure Gain is set before waking up
-    // Set Gain to 6dB (GND)
     gpio_reset_pin(SPEAKER_GAIN_IO);
     gpio_set_direction(SPEAKER_GAIN_IO, GPIO_MODE_OUTPUT);
     gpio_set_level(SPEAKER_GAIN_IO, 1); 
@@ -324,26 +324,24 @@ void init_speaker_hardware() {
     // Drive HIGH to enable
     gpio_set_level(SPEAKER_SD_IO, 1); 
     ESP_LOGI(TAG, "Amplifier Active (SD High)");
-}
+} // <--- Bracket closed correctly here
 
-// 8. I2S Driver Init
 void init_i2s_driver() {
     ESP_LOGI(TAG, "Configuring I2S for MAX98357A...");
 
-    // 1. Create the Channel Configuration (Note the change to 'I2S_CHANNEL_DEFAULT_CONFIG')
+    // 1. Channel Config
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
 
-    // 2. Set the Standard Mode Configuration
+    // 2. Standard Mode Config 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100), 
-        // Note the change to 'I2S_DATA_BIT_WIDTH_16BIT' below
-        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,    
-            .bclk = I2S_BCLK_IO,        
-            .ws   = I2S_LRC_IO,         
-            .dout = I2S_DIN_IO,         
+            .bclk = (gpio_num_t)7,      
+            .ws   = (gpio_num_t)15,     
+            .dout = (gpio_num_t)6,      
             .din  = I2S_GPIO_UNUSED,    
             .invert_flags = {
                 .mclk_inv = false,
@@ -356,7 +354,48 @@ void init_i2s_driver() {
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     
-    ESP_LOGI(TAG, "I2S Driver Enabled and Clocks active.");
+    ESP_LOGI(TAG, "I2S Driver Enabled on Pins 7, 15, 6. Clocks active.");
+} // <--- Bracket closed correctly here
+
+
+void test_speaker_beep() {
+    const int num_cycles = 4;
+    const uint32_t beep_duration_ms = 2000;  // 2 second beep
+    const uint32_t interval_ms = 30000;      // 30 seconds total interval
+
+    // 1. Setup the square wave buffer (Baseline)
+    const int samples_count = 100;
+    int16_t samples[samples_count];
+    for (int i = 0; i < samples_count; i++) {
+        samples[i] = (i < 50) ? 8000 : -8000;
+    }
+
+    for (int cycle = 1; cycle <= num_cycles; cycle++) {
+        ESP_LOGI(TAG, "Starting Cycle %d of %d...", cycle, num_cycles);
+
+        // Ensure I2S is enabled for this beep
+        i2s_channel_enable(tx_handle);
+
+        size_t bytes_written;
+        uint32_t start_time = esp_log_timestamp();
+
+        // 2. The Beep
+        while (esp_log_timestamp() - start_time < beep_duration_ms) {
+            i2s_channel_write(tx_handle, samples, sizeof(samples), &bytes_written, portMAX_DELAY);
+        }
+
+        // 3. Stop the hardware noise immediately
+        i2s_channel_disable(tx_handle);
+        ESP_LOGI(TAG, "Cycle %d Beep Complete. Waiting 30s...", cycle);
+
+        // 4. Wait until the next cycle (unless it's the last one)
+        if (cycle < num_cycles) {
+            // Subtract the beep duration from the interval so the *start* // of each beep happens exactly every 30 seconds.
+            vTaskDelay(pdMS_TO_TICKS(interval_ms - beep_duration_ms));
+        }
+    }
+
+    ESP_LOGI(TAG, "All 4 Cycles Complete.");
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -376,6 +415,7 @@ extern "C" void app_main()
     init_sd_card();  // SD Card must be initialized before the web portal, which may serve files from it.  
     init_speaker_hardware(); // Power up the amplifier hardware before starting the I2S driver to ensure stable clock generation.
     init_i2s_driver(); // Initialize the I2S driver after the amplifier is awake to ensure stable clock generation for the MAX98357A.
+    test_speaker_beep(); // Test the speaker with a simple beep sound.
     init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
     init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
