@@ -1,13 +1,14 @@
 ### 🚢 ShipEffects S3 v1.1: Audio & Logic Engine
 
-A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3 CAM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
+A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
+This version can only play a specific Audio.MP3 file but it is a good working base for future additions.
 
 ## 📦 Component List (BOM)
 
 ### Core Hardware
-* **Microcontroller:** Freenove ESP32-S3-WROOM (Camera Module variant with on board SSD Card Reader). The camera is not used in this project.
+* **Microcontroller:** Freenove ESP32-S3-WROOM (Camera Module variant with on board SD Card Reader). The camera is not used in this project.
 * **Audio Amplifier:** MAX98357A I2S Class-D Mono Amp.
 * **Storage:** Micro SD Card (formatted to FAT32, up to 32GB supported).
 * **Speaker:** 4Ω or 8Ω nominal impedance (connected to MAX98357A output).
@@ -39,8 +40,7 @@ To compile this project, the following components must be declared in your `main
 ## ⚙️ Project Configuration (`menuconfig`)
 The project now utilizes `Kconfig.projbuild` for rapid field adjustments without code changes:
 * **WiFi Credentials:** SSID and Password managed via the UI.
-* **Audio Mode Selector:** 
-    1. **Internal (1):** Diagnostic Sine Sweep (300Hz–2400Hz).
+* **Audio Mode Selector:** 1. **Internal (1):** Diagnostic Sine Sweep (300Hz–2400Hz).
     2. **WAV (2):** Diagnostic SD Card Playback (e.g., `ship_horn.wav`).
     3. **MP3 (3):** Compressed storage playback. (This is normal operating mode)
 
@@ -53,21 +53,23 @@ Verifies audio path integrity and SNR:
 * **Pattern:** 2-second steps per frequency.
 * **Silence:** 15-second "Silent Sleep" between 4 major cycles.
 
-### 2. High-Fidelity Playback: `play_wav_file`
-Streams raw uncompressed audio from the SD card:
-* **Format:** 16-bit PCM WAV (44.1kHz / Mono optimized).
+### 2. High-Fidelity Playback: `play_wav_file` / `MP3`
+Streams audio from the SD card:
+* **Format:** 16-bit PCM WAV (44.1kHz / Mono optimized) or MP3.
 * **Automation:** Configured to loop **4 times** with **15-second intervals**.
 * **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
+* **Stability Fix:** Task is now pinned to **Core 1** to avoid Core 0 Watchdog Timeouts during WiFi activity.
 
 ---
 
 ## 🚀 Execution Flow (`app_main`)
 1.  **NVS Init:** Prepares flash for WiFi credentials.
-2.  **Peripheral Warm-up:** Initializes SD Card (**GPIO 38-40**) and Amplifier (**GPIO 4-5**) hardware.
-3.  **Digital Bus:** Starts I2S Clocks (**GPIO 7 & 15**) and attaches the driver.
-4.  **Network & Time:** Connects WiFi and synchronizes ACST time via SNTP.
-5.  **Web Portal:** Launches the management interface for remote telemetry and file control.
-6.  **Mode Logic:** Evaluates Kconfig selection and executes the chosen Audio Engine.
+2.  **System Event Group:** Creates `s_system_event_group` to sync network/audio states.
+3.  **Peripheral Warm-up:** Initializes SD Card (**GPIO 38-40**) and Amplifier (**GPIO 4-5**) hardware.
+4.  **Digital Bus:** Starts I2S Clocks (**GPIO 7 & 15**) and attaches the driver.
+5.  **Network & Time:** Connects WiFi (with `WIFI_PS_NONE` for stability) and synchronizes ACST time via SNTP.
+6.  **Web Portal:** Launches the management interface for remote telemetry and file control.
+7.  **Audio Task Launch:** Pinned to **Core 1** with a 10s wait for WiFi/Time sync to ensure DMA stability.
 
 ---
 

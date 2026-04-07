@@ -33,7 +33,8 @@ See ShipREADME.md for project overview and details.
 #include "main.h"
 
 #include "driver/i2s_std.h" // For I2S audio output to the MAX98357A
-
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
 
 // --- I2S Audio Bus (The Digital Stream) ---
 #define I2S_BCLK_IO      (GPIO_NUM_7)   // Bit Clock: Synchronizes each individual bit of audio data.
@@ -51,6 +52,9 @@ static const char *TAG = "ShipEffects";
 #define WIFI_PASS CONFIG_WIFI_PASS
 
 static EventGroupHandle_t s_wifi_event_group;
+static EventGroupHandle_t s_system_event_group;
+#define WIFI_CONNECTED_BIT BIT0
+#define SNTP_SYNCED_BIT    BIT1
 
 
 static int sunrise_mins = 0; 
@@ -91,8 +95,8 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI("WIFI", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        // The Bit-setting line is gone.
-        // Our while(1) loop will see the time jump to 2026 shortly after this.
+        // SIGNAL: WiFi is ready!
+        xEventGroupSetBits(s_system_event_group, WIFI_CONNECTED_BIT);
     }
 }
 
@@ -140,6 +144,8 @@ void init_wifi()
 void time_sync_notification_cb(struct timeval *tv)
 {
     ESP_LOGI("SNTP", "Notification: Time has been synchronized!");
+    // SIGNAL: Time is ready!
+    xEventGroupSetBits(s_system_event_group, SNTP_SYNCED_BIT);
 }
 
 // SNTP Init Function
@@ -257,6 +263,12 @@ const float ADL_LAT = -34.9285;
 const float ADL_LON = 138.6007;
 
 extern "C" bool is_solar_night(struct tm *ti) {
+    // If it's 1970, we have no idea where the sun is.
+    if (ti->tm_year < (2025 - 1900)) { 
+        ESP_LOGW(TAG, "Time not synced. Defaulting to 'Night Mode' for safety.");
+        return true; 
+    }
+
     // 1. Determine UTC Offset for Adelaide
     // tm_isdst > 0 means Daylight Savings is active
     float tz_offset = (ti->tm_isdst > 0) ? 10.5 : 9.5;
@@ -449,10 +461,138 @@ void play_wav_file(const char* path, int num_loops) {
     ESP_LOGI(TAG, "All %d WAV loops completed.", num_loops);
 }
 
+void update_i2s_sample_rate(int rate) {
+    ESP_LOGI("SHIP", "Updating I2S rate to: %d Hz", rate);
+
+    // 1. You MUST disable the channel before changing the clock config
+    i2s_channel_disable(tx_handle);
+
+    // 2. Configure the new clock settings
+    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG((uint32_t)rate);
+    
+    // 3. Apply the reconfiguration
+    i2s_channel_reconfig_std_clock(tx_handle, &clk_cfg);
+
+    // 4. Re-enable the channel so it can start pumping data again
+    i2s_channel_enable(tx_handle);
+}
+
+void play_mp3_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open MP3: %s", path);
+        return;
+    }
+
+    ESP_LOGI(TAG, "--- Playing: %s ---", path);
+
+    static mp3dec_t mp3d;
+    mp3dec_init(&mp3d);
+    mp3dec_frame_info_t info;
+
+    const int read_size = 4096;
+    uint8_t* input_buf = (uint8_t*)malloc(read_size);
+    int16_t* pcm_buf = (int16_t*)malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t) * 2);
+
+    size_t bytes_left = 0;
+    int last_rate = 0;
+
+    // REMOVED: i2s_channel_enable (already enabled in init_i2s_driver)
+
+    while (true) {
+        size_t n = fread(input_buf + bytes_left, 1, read_size - bytes_left, f);
+        bytes_left += n;
+
+        if (bytes_left == 0) break;
+
+        int samples = mp3dec_decode_frame(&mp3d, input_buf, bytes_left, pcm_buf, &info);
+        
+        if (samples > 0) {
+/*             if (info.hz != last_rate) {
+                update_i2s_sample_rate(info.hz);
+                last_rate = info.hz;
+            } */
+
+            size_t bytes_written;
+            i2s_channel_write(tx_handle, pcm_buf, samples * info.channels * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+        }
+
+        if (info.frame_bytes > 0) {
+            bytes_left -= info.frame_bytes;
+            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+        }
+
+        // Feed the watchdog a tiny bit if we are in a long loop
+        vTaskDelay(1); 
+    }
+
+    // REMOVED: i2s_channel_disable
+    free(input_buf);
+    free(pcm_buf);
+    fclose(f);
+    ESP_LOGI(TAG, "Playback Finished.");
+}
+
+
+// 1. Update the task to actually DO the work
+void audio_playback_task(void *pvParameters) {
+    ESP_LOGI("SHIP", "Audio Task checking for WiFi/Time sync (10s timeout)...");
+
+    // Wait for bits, but only for 10 seconds
+    EventBits_t bits = xEventGroupWaitBits(
+        s_system_event_group,
+        WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT,// Wait for either WiFi or SNTP to signal ready
+        pdFALSE,        
+        pdTRUE,         
+        pdMS_TO_TICKS(10000) // Wait for up to 10 seconds (10000 ms)
+    );
+
+   // Check which bits were set and log the results
+    if ((bits & (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT)) == (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT)) {
+        ESP_LOGI("SHIP", "System ready with Network Time.");// Both WiFi and SNTP are ready, so we have accurate time for sunrise/sunset calculations and photo timestamps.
+    } else {
+        ESP_LOGW("SHIP", "WiFi/SNTP failed or timed out. Proceeding with local RTC time.");// Proceed anyway, but the time-based features will be inaccurate until time is synced.
+    }
+
+    // Now playback starts regardless of whether WiFi was found
+
+    ESP_LOGI("SHIP", "System Ready! Audio Task proceeding on Core %d", xPortGetCoreID());
+    
+    
+    ESP_LOGI("SHIP", "Audio Task Started. Determining mode...");
+    int core_id = xPortGetCoreID();
+    ESP_LOGI("SHIP", "Audio Task successfully pinned to Core %d", core_id);
+    int sound_mode = 3; // Default to MP3
+    
+    // Map your Kconfig settings here inside the task
+    #if CONFIG_SHIP_SOUND_INTERNAL_DIAGNOSTIC
+        sound_mode = 1;
+    #elif CONFIG_SHIP_SOUND_WAV_MODE
+        sound_mode = 2;
+    #endif
+
+    // Execute the playback
+    switch (sound_mode) {
+        case 1:
+            test_speaker_sine_repeater(); 
+            break;
+        case 2:
+            play_wav_file("/sdcard/ship_horn.wav", 4);
+            break;
+        case 3:
+            play_mp3_file("/sdcard/Audio.mp3");
+            break;
+    }
+
+    ESP_LOGI("SHIP", "Audio Task finished playback. Deleting task.");
+    vTaskDelete(NULL); // Clean up the task when done
+}
+
 // 8. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
 extern "C" void app_main()
 {
+
     // 1. MUST INITIALIZE NVS FIRST FOR WIFI TO WORK
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -460,6 +600,8 @@ extern "C" void app_main()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    s_system_event_group = xEventGroupCreate();// Create the system event group to track WiFi and SNTP readiness
 
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
@@ -470,31 +612,9 @@ extern "C" void app_main()
     init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
 
-// 2. Map Kconfig Booleans to our Case Selector
-    int sound_mode = 3; // Default to MP3
+    // Launch the playback task with 16KB of stack
+    xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 16384, NULL, 5, NULL, 1);// Pin to Core 1 to keep it separate from the main loop and web portal tasks on Core 0.
 
-    #if CONFIG_SHIP_SOUND_INTERNAL_DIAGNOSTIC // This mode generates a simple sine wave tone that steps up in frequency every 2 seconds, cycling through 300Hz, 600Hz, 1200Hz, and 2400Hz. It repeats this pattern 4 times with a 15-second pause in between. This is ideal for testing the speaker hardware and I2S configuration without needing any audio files on the SD card.
-        sound_mode = 1;
-    #elif CONFIG_SHIP_SOUND_WAV_MODE // This mode plays a WAV file from the SD card. The file should be a mono 16-bit PCM WAV for best compatibility with the I2S configuration. This mode is great for testing actual audio playback and can be used to play your ship horn sound effect.
-        sound_mode = 2;
-    #elif CONFIG_SHIP_SOUND_MP3_MODE // This mode plays an MP3 file from the SD card.
-    #endif
-
-    // 3. Execute based on selection
-    switch (sound_mode) {
-        case 1:// Internal Diagnostic Mode
-            ESP_LOGI("SHIP", "Mode 1: Internal Diagnostics (Sine/Square)");
-            test_speaker_sine_repeater(); 
-            break;
-        case 2:// WAV Playback Mode
-            ESP_LOGI("SHIP", "Mode 2: WAV Playback");
-            play_wav_file("/sdcard/ship_horn.wav", 4);
-            break;
-        case 3://
-            ESP_LOGI("SHIP", "Mode 3: MP3 Playback (Default)");
-            // play_mp3_file("/sdcard/engine_hum.mp3");
-            break;
-    }
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -513,6 +633,6 @@ extern "C" void app_main()
     while (1)
     {
         // ... your loop logic ...
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Placeholder delay to prevent watchdog resets. Replace with actual logic.
     }
 }
