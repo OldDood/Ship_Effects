@@ -3,7 +3,7 @@
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
-This version can only play a specific Audio.MP3 file but it is a good working base for future additions.
+**This version can play any .MP3 file and is a good working base for future additions.**
 
 ## 📦 Component List (BOM)
 

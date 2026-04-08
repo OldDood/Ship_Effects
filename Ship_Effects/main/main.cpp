@@ -5,7 +5,6 @@ See ShipREADME.md for project overview and details.
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include <sys/time.h>
 #include "esp_log.h"
@@ -335,39 +334,36 @@ void init_speaker_hardware() {
     
     // Drive HIGH to enable
     gpio_set_level(SPEAKER_SD_IO, 1); 
-    ESP_LOGI(TAG, "Amplifier Active (SD High)");
-} // <--- Bracket closed correctly here
+ESP_LOGI(TAG, "Amplifier Pins Configured on Core %d", xPortGetCoreID());
+}// <--- Bracket closed correctly here
 
 void init_i2s_driver() {
     ESP_LOGI(TAG, "Configuring I2S for MAX98357A...");
 
-    // 1. Channel Config
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, NULL));
 
-    // 2. Standard Mode Config 
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100), 
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        /* --- CHANGE START: Set to STEREO so the clock speed matches the data --- */
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        /* --- CHANGE END --- */
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,    
-            .bclk = (gpio_num_t)7,      
-            .ws   = (gpio_num_t)15,     
-            .dout = (gpio_num_t)6,      
+            .bclk = I2S_BCLK_IO,      
+            .ws   = I2S_LRC_IO,     
+            .dout = I2S_DIN_IO,      
             .din  = I2S_GPIO_UNUSED,    
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv   = false,
-            },
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
     
-    ESP_LOGI(TAG, "I2S Driver Enabled on Pins 7, 15, 6. Clocks active.");
-} // <--- Bracket closed correctly here
+    ESP_LOGI(TAG, "I2S Driver Enabled in STEREO mode for correct timing.");
+}
 
 
 // 7a. Internal Diagnostic Test Function
@@ -414,8 +410,8 @@ void test_speaker_sine_repeater() {
         i2s_channel_disable(tx_handle);// Disable the I2S output during the silent period to prevent "hiss" and save power.
         // If this isn't the last cycle, wait 15 seconds before starting the next one
         if (cycle < num_cycles) {
-            ESP_LOGI(TAG, "Waiting 15 seconds...");
-            vTaskDelay(pdMS_TO_TICKS(15000));
+            ESP_LOGI(TAG, "Waiting 1 seconds...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 }
@@ -452,10 +448,10 @@ void play_wav_file(const char* path, int num_loops) {
         // Disable I2S during the silent period to prevent "hiss"
         i2s_channel_disable(tx_handle);
 
-        // If this wasn't the last loop, wait 15 seconds
+        // If this wasn't the last loop, wait 1 seconds
         if (i < num_loops) {
-            ESP_LOGI(TAG, "WAV finished. Waiting 15 seconds before next loop...");
-            vTaskDelay(pdMS_TO_TICKS(15000));
+            ESP_LOGI(TAG, "WAV finished. Waiting 1 seconds before next loop...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
     ESP_LOGI(TAG, "All %d WAV loops completed.", num_loops);
@@ -537,7 +533,9 @@ void play_mp3_file(const char* path) {
 // 1. Update the task to actually DO the work
 void audio_playback_task(void *pvParameters) {
     ESP_LOGI("SHIP", "Audio Task checking for WiFi/Time sync (10s timeout)...");
-
+    // the I2S ISR (Interrupt Service Routine) will be registered on Core 1.
+    init_speaker_hardware(); 
+    init_i2s_driver();
     // Wait for bits, but only for 10 seconds
     EventBits_t bits = xEventGroupWaitBits(
         s_system_event_group,
@@ -580,7 +578,7 @@ void audio_playback_task(void *pvParameters) {
             play_wav_file("/sdcard/ship_horn.wav", 4);
             break;
         case 3:
-            play_mp3_file("/sdcard/Audio.mp3");
+            play_mp3_file("/sdcard/cannon-fire-161072.mp3");
             break;
     }
 
@@ -606,15 +604,12 @@ extern "C" void app_main()
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
     init_sd_card();  // SD Card must be initialized before the web portal, which may serve files from it.  
-    init_speaker_hardware(); // Power up the amplifier hardware before starting the I2S driver to ensure stable clock generation.
-    init_i2s_driver(); // Initialize the I2S driver after the amplifier is awake to ensure stable clock generation for the MAX98357A.
     init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
     init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
 
     // Launch the playback task with 16KB of stack
-    xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 16384, NULL, 5, NULL, 1);// Pin to Core 1 to keep it separate from the main loop and web portal tasks on Core 0.
-
+    xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
