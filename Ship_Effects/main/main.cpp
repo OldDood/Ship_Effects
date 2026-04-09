@@ -646,21 +646,10 @@ extern "C" void app_main()
         ESP_LOGI("TIME", "Cold boot or time not yet synced.");
     }
 
-    uint8_t count = 0;//Remove this when you add your actual logic. This is just to demonstrate the 4 output pins working as a binary counter.
-    
+  
     // --- MAIN LOOP ---
     while (1)
     {
-        //Remove the following block when you add your actual logic. This is just a demonstration of using the 4 output pins as a binary counter to visually confirm they are working correctly.
-        // Set each pin based on the binary bit of the count
-        gpio_set_level(WLED_OP_BIT1, (count >> 0) & 0x01);
-        gpio_set_level(WLED_OP_BIT2, (count >> 1) & 0x01);
-        gpio_set_level(WLED_OP_BIT4, (count >> 2) & 0x01);
-        gpio_set_level(WLED_OP_BIT8, (count >> 3) & 0x01);
-
-
-        count++;
-        if (count > 15) count = 0; // Reset after 15 (1111 binary)
         // ... your loop logic ...
         vTaskDelay(pdMS_TO_TICKS(100)); // Placeholder delay to prevent watchdog resets. Replace with actual logic.
     }

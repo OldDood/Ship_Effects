@@ -17,7 +17,7 @@ httpd_handle_t server = NULL;
 
 // --- External Solar Functions ---
 extern "C" bool is_solar_night(struct tm *ti);
-extern "C" int get_sunrise_mins(); 
+extern "C" int get_sunrise_mins();
 extern "C" int get_sunset_mins();
 
 // --- Handlers ---
@@ -25,15 +25,15 @@ extern "C" int get_sunset_mins();
 esp_err_t index_get_handler(httpd_req_t *req)
 {
     ESP_LOGW("DEBUG", "===> ROOT HANDLER TRIGGERED <===");
-extern const uint8_t web_portal_html_start[] asm("_binary_ship_web_html_start");
-extern const uint8_t web_portal_html_end[]   asm("_binary_ship_web_html_end");
+    extern const uint8_t web_portal_html_start[] asm("_binary_ship_web_html_start");
+    extern const uint8_t web_portal_html_end[] asm("_binary_ship_web_html_end");
     // Force a hard pointer check
-    const char* data = (const char*)web_portal_html_start;
+    const char *data = (const char *)web_portal_html_start;
     size_t len = web_portal_html_end - web_portal_html_start;
-   // --- ADD THIS LINE HERE ---
-    ESP_LOGW("DEBUG", "Address of data: %p", (void*)web_portal_html_start);
+    // --- ADD THIS LINE HERE ---
+    ESP_LOGW("DEBUG", "Address of data: %p", (void *)web_portal_html_start);
     // -
-    // DIAGNOSTIC: If the first 5 characters aren't HTML, 
+    // DIAGNOSTIC: If the first 5 characters aren't HTML,
     // the linker is definitely pointing to your .cpp file.
 
     ESP_LOGI(TAG, "First 5 bytes of index: %.5s", data);
@@ -61,7 +61,7 @@ esp_err_t list_get_handler(httpd_req_t *req)
                 long size = 0;
                 if (stat(filepath, &st) == 0)
                     size = st.st_size;
-                
+
                 char entry_str[400];
                 snprintf(entry_str, sizeof(entry_str), "%s{\"name\":\"%s\",\"size\":%ld}",
                          first ? "" : ",", ent->d_name, size);
@@ -81,25 +81,33 @@ esp_err_t upload_post_handler(httpd_req_t *req)
     char filepath[300];
     // We expect the filename in the query string: /upload?file=filename.mp3
     char query[256], filename[256];
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        if (httpd_query_key_value(query, "file", filename, sizeof(filename)) == ESP_OK) {
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        if (httpd_query_key_value(query, "file", filename, sizeof(filename)) == ESP_OK)
+        {
             snprintf(filepath, sizeof(filepath), "/sdcard/%s", filename);
-        } else {
+        }
+        else
+        {
             return httpd_resp_send_404(req);
         }
-    } else {
+    }
+    else
+    {
         return httpd_resp_send_404(req);
     }
 
     FILE *fd = fopen(filepath, "wb");
-    if (!fd) {
+    if (!fd)
+    {
         ESP_LOGE(TAG, "Failed to create file : %s", filepath);
         return httpd_resp_send_500(req);
     }
 
-    char *buf = (char*)malloc(4096);
+    char *buf = (char *)malloc(4096);
     int received;
-    while ((received = httpd_req_recv(req, buf, 4096)) > 0) {
+    while ((received = httpd_req_recv(req, buf, 4096)) > 0)
+    {
         fwrite(buf, 1, received, fd);
     }
     fclose(fd);
@@ -228,10 +236,13 @@ esp_err_t solar_get_handler(httpd_req_t *req)
     time(&now);
     localtime_r(&now, &ti);
 
-    if (ti.tm_year < (2020 - 1900)) {
+    if (ti.tm_year < (2020 - 1900))
+    {
         snprintf(json_response, sizeof(json_response), "{\"error\":\"Time not synced via NTP\"}");
-    } else {
-        int sunrise = get_sunrise_mins(); 
+    }
+    else
+    {
+        int sunrise = get_sunrise_mins();
         int sunset = get_sunset_mins();
         bool night = is_solar_night(&ti);
 
@@ -246,11 +257,37 @@ esp_err_t solar_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, json_response);
 }
 
+esp_err_t play_get_handler(httpd_req_t *req)
+{
+    char query[256];
+    char project[128] = {0};
+    char sync_flag[10] = {0};
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        // Extract "project" name
+        if (httpd_query_key_value(query, "project", project, sizeof(project)) == ESP_OK)
+        {
+            // Extract "sync" preference (1 or 0)
+            httpd_query_key_value(query, "sync", sync_flag, sizeof(sync_flag));
+
+            ESP_LOGI(TAG, "Web Request -> Project: %s, Sync: %s", project, sync_flag);
+
+            // TODO: Signal your Audio/I2S Task here.
+            // Example: play_performance(project, strcmp(sync_flag, "1") == 0);
+
+            httpd_resp_sendstr(req, "Play command received");
+            return ESP_OK;
+        }
+    }
+    return httpd_resp_send_404(req);
+}
 // --- Server Control ---
 
 void start_web_portal()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 12;   // Increase the limit so it can hold all 9 of your URIs
     config.stack_size = 10240;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
@@ -281,7 +318,12 @@ void start_web_portal()
         httpd_uri_t solar_uri = {.uri = "/solar", .method = HTTP_GET, .handler = solar_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &solar_uri);
 
+        httpd_uri_t play_uri = {.uri = "/play", .method = HTTP_GET, .handler = play_get_handler, .user_ctx = NULL};
+        httpd_register_uri_handler(server, &play_uri);
+
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
+
+        ESP_LOGI(TAG, "Server started with Play Sync URI initialized.");
     }
 }
 

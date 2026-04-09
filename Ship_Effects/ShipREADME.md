@@ -3,8 +3,9 @@
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
-**This version has the 4 of WLED outputs configured and a temporary test program in a while statement to ensure they count**
-**The test program will be removed in future versions**
+**This version change**
+**Refactor: Integrated web portal play/sync logic. Increased max_uri_handlers to 12. Removed legacy WLED digital outputs test loop**
+**Automatic play of MP3/CSV file not yet done but web portal interface is complete and working**
 
 ## 📦 Component List (BOM)
 

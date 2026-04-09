@@ -10,7 +10,7 @@
         h2 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
         .section { margin-bottom: 20px; padding: 15px; background: #fafafa; border-radius: 5px; border: 1px solid #eee; }
         .file-list { margin-top: 10px; }
-        .file-item { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eee; align-items: center; }
+        .file-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
         .btn { padding: 8px 12px; cursor: pointer; border: none; border-radius: 4px; color: white; text-decoration: none; font-size: 14px; display: inline-block; }
         .btn-upload { background-color: #28a745; margin-top: 10px; }
         .btn-delete { background-color: #dc3545; }
@@ -20,6 +20,10 @@
         #status-area { margin-top: 10px; display: flex; align-items: center; }
         #status { font-weight: bold; color: #d9534f; }
         
+        /* New styling for the Selection state */
+        .sync-badge { background-color: #e9ecef; color: #495057; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
+        .selected-glow { background-color: #fff9db !important; border-left: 4px solid #ffcc00; }
+
         .progress-container { width: 100%; background-color: #eee; border-radius: 4px; margin-top: 12px; display: none; }
         .progress-bar { width: 0%; height: 12px; background-color: #28a745; border-radius: 4px; transition: width 0.1s; }
     </style>
@@ -30,7 +34,7 @@
     <h2>Ship Audio Management</h2>
 
     <div class="section">
-        <strong>Upload New Effect (.mp3)</strong><br>
+        <strong>Upload New Effect (.mp3 or .csv)</strong><br>
         <input type="file" id="fileInput" accept=".mp3,.csv" style="margin-top:10px;">
         <br>
         <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
@@ -55,7 +59,8 @@
 </div>
 
 <script>
-    let currentXhr = null; // Global reference for the cancel function
+    let currentXhr = null; 
+    let selectedProject = ""; // Stores the base name of the paired project
 
     function updateStatus(msg) {
         document.getElementById('status').innerText = msg;
@@ -68,25 +73,90 @@
             const listDiv = document.getElementById('fileList');
             listDiv.innerHTML = '';
 
-            data.files.forEach(file => {
+            // 1. Sort files into types
+            const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
+            const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+
+            // 2. Build the list based on Audio files
+            audioFiles.forEach(file => {
                 const item = document.createElement('div');
-                item.className = 'file-item';
-                const displayName = decodeURIComponent(file.name);
+                const fullName = decodeURIComponent(file.name);
+                const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
+                
+                // Check for a matching CSV
+                const hasMatchingCsv = csvFiles.some(csv => 
+                    decodeURIComponent(csv.name).startsWith(baseName)
+                );
+
+                const isSelected = (selectedProject === baseName);
+                item.className = 'file-item' + (isSelected ? ' selected-glow' : '');
+                
+                const selectBtnStyle = isSelected ? "background-color: #ffcc00; color: black; font-weight:bold;" : "background-color: #6c757d;";
+                const selectBtnText = isSelected ? "SELECTED" : "Select CSV";
 
                 item.innerHTML = `
-                    <span>${displayName} (${(file.size / 1024).toFixed(1)} KB)</span>
+                    <span>
+                        <strong>${baseName}</strong><br>
+                        <small style="color: #666;">${(file.size / 1024).toFixed(1)} KB</small>
+                        ${hasMatchingCsv ? '<span class="sync-badge">SYNC READY</span>' : ''}
+                    </span>
                     <div>
-                        <a href="/download?file=${file.name}" target="_blank" class="btn btn-download">Play</a>
+                        ${hasMatchingCsv ? `<button id="sel-${baseName}" class="btn" style="${selectBtnStyle} margin-right:5px;" onclick="selectProject('${baseName}')">${selectBtnText}</button>` : ''}
+                        <button class="btn btn-download" onclick="playProject('${baseName}')">Play</button>
                         <button class="btn btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
                     </div>
                 `;
                 listDiv.appendChild(item);
             });
+
+            // 3. Show Orphanded CSVs (those without a matching MP3)
+            csvFiles.forEach(csv => {
+                const csvName = decodeURIComponent(csv.name);
+                const base = csvName.substring(0, csvName.lastIndexOf('.'));
+                const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
+                
+                if (!hasMp3) {
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    item.innerHTML = `
+                        <span style="color: #999;">${csvName} <small>(Script Only)</small></span>
+                        <button class="btn btn-delete" onclick="deleteFile('${csv.name}')">Delete</button>
+                    `;
+                    listDiv.appendChild(item);
+                }
+            });
+
             updateStorage();
         } catch (e) {
             document.getElementById('fileList').innerText = "Failed to load files.";
         }
     }
+
+    function selectProject(name) {
+        // Toggle selection: if clicked again, it deselects
+        if (selectedProject === name) {
+            selectedProject = "";
+        } else {
+            selectedProject = name;
+        }
+        fetchFiles(); // Re-render to show highlight
+    }
+
+async function playProject(name) {
+    const useSync = (selectedProject === name) ? "1" : "0";
+    updateStatus("Sending command...");
+
+    try {
+        const response = await fetch(`/play?project=${encodeURIComponent(name)}&sync=${useSync}`);
+        if (response.ok) {
+            updateStatus("Playing: " + name + (useSync === "1" ? " (Synchronized)" : ""));
+        } else {
+            updateStatus("Error: Server returned " + response.status);
+        }
+    } catch (err) {
+        updateStatus("Network error: Could not reach ship.");
+    }
+}
 
     function uploadFile() {
         const fileInput = document.getElementById('fileInput');
@@ -96,7 +166,7 @@
         const uploadBtn = document.getElementById('uploadBtn');
         
         if (fileInput.files.length === 0) {
-            updateStatus("Please select a file (.mp3 or .csv) first.");
+            updateStatus("Please select a file first.");
             return;
         }
 
@@ -107,7 +177,7 @@
         progBar.style.width = '0%';
         progBar.style.backgroundColor = '#28a745';
         cancelBtn.style.display = 'inline-block';
-        uploadBtn.disabled = true; // Prevent double-clicking
+        uploadBtn.disabled = true;
         updateStatus("Preparing...");
 
         currentXhr.upload.onprogress = function(event) {
@@ -126,7 +196,7 @@
                 setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 3000);
                 fetchFiles();
             } else {
-                updateStatus("Upload Failed (Status: " + currentXhr.status + ")");
+                updateStatus("Upload Failed (" + currentXhr.status + ")");
                 progBar.style.backgroundColor = "#dc3545";
             }
         };
@@ -142,7 +212,7 @@
             uploadBtn.disabled = false;
             cancelBtn.style.display = 'none';
             updateStatus("Upload Cancelled.");
-            progBar.style.backgroundColor = "#6c757d"; // Gray bar for cancelled
+            progBar.style.backgroundColor = "#6c757d";
             setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 2000);
         };
 
@@ -151,9 +221,7 @@
     }
 
     function cancelUpload() {
-        if (currentXhr) {
-            currentXhr.abort();
-        }
+        if (currentXhr) currentXhr.abort();
     }
 
     async function deleteFile(name) {
