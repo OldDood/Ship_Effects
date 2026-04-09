@@ -20,6 +20,15 @@ extern "C" bool is_solar_night(struct tm *ti);
 extern "C" int get_sunrise_mins();
 extern "C" int get_sunset_mins();
 
+// In a header file included by both main.cpp and web_portal.cpp
+typedef struct {
+    char filename[64];
+    bool sync_enabled;
+} playback_cmd_t;
+
+// This allows web_portal to call the function located in main.cpp
+extern "C" void trigger_project_play(playback_cmd_t *cmd);
+
 // --- Handlers ---
 
 esp_err_t index_get_handler(httpd_req_t *req)
@@ -260,21 +269,25 @@ esp_err_t solar_get_handler(httpd_req_t *req)
 esp_err_t play_get_handler(httpd_req_t *req)
 {
     char query[256];
-    char project[128] = {0};
-    char sync_flag[10] = {0};
+    // Create the struct we defined in main.h
+    playback_cmd_t cmd; 
+    memset(&cmd, 0, sizeof(playback_cmd_t));
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
     {
-        // Extract "project" name
-        if (httpd_query_key_value(query, "project", project, sizeof(project)) == ESP_OK)
+        // 1. Extract "project" name from URL into the struct
+        if (httpd_query_key_value(query, "project", cmd.filename, sizeof(cmd.filename)) == ESP_OK)
         {
-            // Extract "sync" preference (1 or 0)
-            httpd_query_key_value(query, "sync", sync_flag, sizeof(sync_flag));
+            // 2. Extract "sync" preference
+            char sync_flag[10] = {0};
+            if (httpd_query_key_value(query, "sync", sync_flag, sizeof(sync_flag)) == ESP_OK) {
+                cmd.sync_enabled = (strcmp(sync_flag, "1") == 0);
+            }
 
-            ESP_LOGI(TAG, "Web Request -> Project: %s, Sync: %s", project, sync_flag);
+            ESP_LOGI(TAG, "Web Request Received -> File: %s, Sync: %d", cmd.filename, cmd.sync_enabled);
 
-            // TODO: Signal your Audio/I2S Task here.
-            // Example: play_performance(project, strcmp(sync_flag, "1") == 0);
+            // 3. SEND TO QUEUE: This is the critical line that wakes up Core 1
+            trigger_project_play(&cmd);
 
             httpd_resp_sendstr(req, "Play command received");
             return ESP_OK;
@@ -282,6 +295,7 @@ esp_err_t play_get_handler(httpd_req_t *req)
     }
     return httpd_resp_send_404(req);
 }
+
 // --- Server Control ---
 
 void start_web_portal()

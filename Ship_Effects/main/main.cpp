@@ -62,6 +62,26 @@ static EventGroupHandle_t s_system_event_group;
 #define WLED_OP_BIT8 (gpio_num_t)13// GPIO pin for WLED Bit 8 (Value of 8)
 
 
+// This queue will hold the filename of the project we want to play
+static QueueHandle_t playback_queue = NULL;
+
+// In a header file included by both main.cpp and web_portal.cpp
+typedef struct {
+    char filename[64];
+    bool sync_enabled;
+} playback_cmd_t;
+
+// This allows web_portal to call the function located in main.cpp
+extern "C" void trigger_project_play(playback_cmd_t *cmd) {
+    if (playback_queue != NULL) {
+        // We send a copy of the struct into the queue
+        // This is safe even if the web server handler finishes and 'cmd' goes out of scope
+        xQueueSend(playback_queue, cmd, pdMS_TO_TICKS(10));
+    } else {
+        ESP_LOGE("MAIN", "Playback queue not initialized!");
+    }
+}
+
 static int sunrise_mins = 0; 
 static int sunset_mins = 0;
 extern "C" int get_sunrise_mins() { return sunrise_mins; }
@@ -591,20 +611,36 @@ void audio_playback_task(void *pvParameters) {
     #endif
 
     // Execute the playback
-    switch (sound_mode) {
+switch (sound_mode) {
         case 1:
             test_speaker_sine_repeater(); 
+            ESP_LOGI("SHIP", "Diagnostic Finished. Cleaning up...");
+            vTaskDelete(NULL); // OK to delete: Bench test is done.
             break;
+
         case 2:
             play_wav_file("/sdcard/ship_horn.wav", 4);
+            ESP_LOGI("SHIP", "WAV Test Finished. Cleaning up...");
+            vTaskDelete(NULL); // OK to delete: Horn test is done.
             break;
+
         case 3:
-            play_mp3_file("/sdcard/cannon-fire-161072.mp3");
-            break;
+            ESP_LOGI("SHIP", "Entering Persistent Web Mode. Task will NOT be deleted.");
+            playback_cmd_t cmd;
+            char full_path[128];
+
+            while (1) {
+                if (xQueueReceive(playback_queue, &cmd, portMAX_DELAY)) {
+                    snprintf(full_path, sizeof(full_path), "/sdcard/%s.mp3", cmd.filename);
+                    play_mp3_file(full_path);
+                    // No vTaskDelete here! We loop back to xQueueReceive and wait.
+                }
+            }
+            break; // This line is never actually reached in Case 3.
     }
 
     ESP_LOGI("SHIP", "Audio Task finished playback. Deleting task.");
-    vTaskDelete(NULL); // Clean up the task when done
+    
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -631,7 +667,8 @@ extern "C" void app_main()
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
    
     // Launch the playback task with 16KB of stack
-    xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
+   playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));
+   xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();

@@ -5,7 +5,9 @@ A high-performance automation and telemetry engine for a ship model display, run
 ---
 **This version change**
 **Refactor: Integrated web portal play/sync logic. Increased max_uri_handlers to 12. Removed legacy WLED digital outputs test loop**
-**Automatic play of MP3/CSV file not yet done but web portal interface is complete and working**
+**Status: Full MP3 integration complete. A .mp3 file can be sected and played from the web browser if a .csv file with matching name is also present on the SD card.**
+**Next step is to implement the .CSV marker file parsing so that it controls the 4 WLED outputs to create a binary code from 0 to 15**
+
 
 ## 📦 Component List (BOM)
 
@@ -75,7 +77,27 @@ Streams audio from the SD card:
 * **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
 * **Stability Fix:** Task is now pinned to **Core 1** to avoid Core 0 Watchdog Timeouts during WiFi activity.
 
+**🎼 MP3 Decoder & Sync Engine**
+The system utilizes a dedicated decoder task to bridge the gap between compressed SD data and the I2S DMA buffers.
+
+**Decoding:** Software-based MP3 decoding (libmad/minimp3) streaming to i2s_channel_write.
+
+**Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
 ---
+## 💡 WLED Parallel Interface
+To trigger lighting effects without the overhead of network packets, the S3 communicates via a **4-bit physical parallel bus** to the WLED controller.
+
+| Bit | GPIO | Weight | Function |
+| :--- | :--- | :--- | :--- |
+| **0** | `10` | 1 | **LSB** - Effect Trigger |
+| **1** | `11` | 2 | Effect Trigger |
+| **2** | `12` | 4 | Effect Trigger |
+| **3** | `13` | 8 | **MSB** - Effect Trigger |
+
+* **Logic Level:** 3.3V CMOS.
+* **Protocol:** The S3 sets the 4-bit state → WLED reads the integer value (0–15) → WLED executes the corresponding Preset or Segment effect.
+* **Timing:** Bit states are held for the duration of the audio event to prevent ghost triggers.
+* **Safety:** Pins are initialized as push-pull outputs to ensure clean logic transitions.
 
 ## 🚀 Execution Flow (`app_main`)
 1.  **NVS Init:** Prepares flash for WiFi credentials.
