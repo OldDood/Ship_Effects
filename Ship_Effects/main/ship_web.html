@@ -31,7 +31,7 @@
 
     <div class="section">
         <strong>Upload New Effect (.mp3)</strong><br>
-        <input type="file" id="fileInput" accept=".mp3" style="margin-top:10px;">
+        <input type="file" id="fileInput" accept=".mp3,.csv" style="margin-top:10px;">
         <br>
         <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
         
@@ -96,7 +96,7 @@
         const uploadBtn = document.getElementById('uploadBtn');
         
         if (fileInput.files.length === 0) {
-            updateStatus("Please select an .mp3 file first.");
+            updateStatus("Please select a file (.mp3 or .csv) first.");
             return;
         }
 

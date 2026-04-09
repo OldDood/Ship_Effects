@@ -3,7 +3,8 @@
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
-**This version can play any .MP3 file and is a good working base for future additions.**
+**This version has the 4 of WLED outputs configured and a temporary test program in a while statement to ensure they count**
+**The test program will be removed in future versions**
 
 ## 📦 Component List (BOM)
 
@@ -22,7 +23,9 @@ To compile this project, the following components must be declared in your `main
 
 ---
 
-## 🛠 Hardware Pinout (Confirmed v1.1)
+It’s a good idea to keep the documentation in sync with the physical reality of the workbench. I've updated the table to include your weighted WLED outputs and refined the notes to reflect the latest measurements and configurations.
+
+## 🛠 Hardware Pinout (Confirmed v1.2)
 
 | Component | GPIO Pin | Configuration / Notes |
 | :--- | :--- | :--- |
@@ -34,8 +37,19 @@ To compile this project, the following components must be declared in your `main
 | **I2S DIN** | `6` | **Data Out.** Digital audio stream to MAX98357A. |
 | **AMP SD** | `4` | **Shutdown.** Measured at 3V (Amp Active). |
 | **AMP GAIN** | `5` | **Gain.** Measured at 3.165V (**12dB** standard floor). |
+| **WLED_OP_BIT1** | `10` | **Parallel Bus Bit 0.** Weighted value: 1. |
+| **WLED_OP_BIT2** | `11` | **Parallel Bus Bit 1.** Weighted value: 2. |
+| **WLED_OP_BIT4** | `12` | **Parallel Bus Bit 2.** Weighted value: 4. |
+| **WLED_OP_BIT8** | `13` | **Parallel Bus Bit 3.** Weighted value: 8. |
 
 ---
+
+### Integration Notes:
+* **WLED Interface:** The 4-bit bus provides 15 unique trigger IDs (plus 0 for idle).
+* **Safety Logic:** All WLED output pins are initialized as push-pull outputs to ensure clean logic transitions for the receiver.
+* **Audio Sync:** GPIOs 10-13 are updated via the marker parser during I2S playback.
+
+Once you commit this, your README will be a perfect "as-built" record of the hardware! Ready to start on that `M.S.CS` parser logic?
 
 ## ⚙️ Project Configuration (`menuconfig`)
 The project now utilizes `Kconfig.projbuild` for rapid field adjustments without code changes:

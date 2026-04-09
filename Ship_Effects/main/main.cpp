@@ -56,6 +56,12 @@ static EventGroupHandle_t s_system_event_group;
 #define SNTP_SYNCED_BIT    BIT1
 
 
+#define WLED_OP_BIT1 (gpio_num_t)10 // GPIO pin for WLED Bit 1 (Value of 1)
+#define WLED_OP_BIT2 (gpio_num_t)11// GPIO pin for WLED Bit 2 (Value of 2)
+#define WLED_OP_BIT4 (gpio_num_t)12// GPIO pin for WLED Bit 4 (Value of 4)
+#define WLED_OP_BIT8 (gpio_num_t)13// GPIO pin for WLED Bit 8 (Value of 8)
+
+
 static int sunrise_mins = 0; 
 static int sunset_mins = 0;
 extern "C" int get_sunrise_mins() { return sunrise_mins; }
@@ -254,6 +260,21 @@ esp_err_t un_init_sd_card()
         }
     }
     return ret;
+}
+
+void init_wled_bus() {
+    // Reset and set each pin as output individually
+    gpio_reset_pin(WLED_OP_BIT1);
+    gpio_set_direction(WLED_OP_BIT1, GPIO_MODE_OUTPUT);
+
+    gpio_reset_pin(WLED_OP_BIT2);
+    gpio_set_direction(WLED_OP_BIT2, GPIO_MODE_OUTPUT);
+
+    gpio_reset_pin(WLED_OP_BIT4);
+    gpio_set_direction(WLED_OP_BIT4, GPIO_MODE_OUTPUT);
+
+    gpio_reset_pin(WLED_OP_BIT8);
+    gpio_set_direction(WLED_OP_BIT8, GPIO_MODE_OUTPUT);
 }
 
 
@@ -504,10 +525,10 @@ void play_mp3_file(const char* path) {
         int samples = mp3dec_decode_frame(&mp3d, input_buf, bytes_left, pcm_buf, &info);
         
         if (samples > 0) {
-/*             if (info.hz != last_rate) {
+            if (info.hz != last_rate) {
                 update_i2s_sample_rate(info.hz);
                 last_rate = info.hz;
-            } */
+            }
 
             size_t bytes_written;
             i2s_channel_write(tx_handle, pcm_buf, samples * info.channels * sizeof(int16_t), &bytes_written, portMAX_DELAY);
@@ -603,11 +624,12 @@ extern "C" void app_main()
 
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
+    init_wled_bus(); // Initialize the WLED control pins early so they are ready for use in the web portal and any other logic.
     init_sd_card();  // SD Card must be initialized before the web portal, which may serve files from it.  
     init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
     init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
-
+   
     // Launch the playback task with 16KB of stack
     xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
 
@@ -624,10 +646,22 @@ extern "C" void app_main()
         ESP_LOGI("TIME", "Cold boot or time not yet synced.");
     }
 
+    uint8_t count = 0;//Remove this when you add your actual logic. This is just to demonstrate the 4 output pins working as a binary counter.
+    
     // --- MAIN LOOP ---
     while (1)
     {
+        //Remove the following block when you add your actual logic. This is just a demonstration of using the 4 output pins as a binary counter to visually confirm they are working correctly.
+        // Set each pin based on the binary bit of the count
+        gpio_set_level(WLED_OP_BIT1, (count >> 0) & 0x01);
+        gpio_set_level(WLED_OP_BIT2, (count >> 1) & 0x01);
+        gpio_set_level(WLED_OP_BIT4, (count >> 2) & 0x01);
+        gpio_set_level(WLED_OP_BIT8, (count >> 3) & 0x01);
+
+
+        count++;
+        if (count > 15) count = 0; // Reset after 15 (1111 binary)
         // ... your loop logic ...
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Placeholder delay to prevent watchdog resets. Replace with actual logic.
+        vTaskDelay(pdMS_TO_TICKS(100)); // Placeholder delay to prevent watchdog resets. Replace with actual logic.
     }
 }
