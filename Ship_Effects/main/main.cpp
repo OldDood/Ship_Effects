@@ -87,7 +87,7 @@ static EventGroupHandle_t s_system_event_group;
 
 
 void load_timeline_from_csv(const char* file_path);// Forward declaration of the function to load the timeline from a CSV file
-
+void set_wled_bus_value(uint8_t value); // Forward declaration of the function to set the WLED bus value based on the marker ID
 // This queue will hold the filename of the project we want to play
 static QueueHandle_t playback_queue = NULL;
 
@@ -579,8 +579,9 @@ void play_mp3_file(const char *path)
 
     size_t bytes_left = 0;
     int last_rate = 0;
-
-    // REMOVED: i2s_channel_enable (already enabled in init_i2s_driver)
+    
+    // --- NEW: Sync Variables ---
+    uint64_t total_bytes_sent = 0;
 
     while (true)
     {
@@ -600,8 +601,38 @@ void play_mp3_file(const char *path)
                 last_rate = info.hz;
             }
 
+            size_t bytes_to_write = samples * info.channels * sizeof(int16_t);
             size_t bytes_written;
-            i2s_channel_write(tx_handle, pcm_buf, samples * info.channels * sizeof(int16_t), &bytes_written, portMAX_DELAY);
+            
+            // Send PCM data to I2S
+            i2s_channel_write(tx_handle, pcm_buf, bytes_to_write, &bytes_written, portMAX_DELAY);
+            
+            // --- SYNC ENGINE START ---
+            total_bytes_sent += bytes_written;
+            
+            // Calculate current playback time in milliseconds
+            // Formula: bytes / (samples_per_sec * channels * bytes_per_sample) * 1000
+            // For 44100Hz Stereo 16-bit: total_bytes_sent / 176.4
+            uint32_t current_ms = (uint32_t)(total_bytes_sent / (info.hz * info.channels * 2.0 / 1000.0));
+
+            // Check if any markers need to fire
+            if (xSemaphoreTake(ship_timeline.mutex, 0) == pdTRUE) {
+                for (int i = 0; i < ship_timeline.count; i++) {
+                    if (!ship_timeline.markers[i].triggered && current_ms >= ship_timeline.markers[i].trigger_ms) {
+                        
+                        ship_timeline.markers[i].triggered = true; // Set flag so it only fires once
+                        
+                        ESP_LOGI("SYNC", ">>> TRIGGER MARKER %d at %ld ms (Track Time: %ld ms)", 
+                                 ship_timeline.markers[i].marker_id, 
+                                 ship_timeline.markers[i].trigger_ms, 
+                                 current_ms);
+
+                        set_wled_bus_value(ship_timeline.markers[i].marker_id);
+                    }
+                }
+                xSemaphoreGive(ship_timeline.mutex);
+            }
+            // --- SYNC ENGINE END ---
         }
 
         if (info.frame_bytes > 0)
@@ -610,15 +641,29 @@ void play_mp3_file(const char *path)
             memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
         }
 
-        // Feed the watchdog a tiny bit if we are in a long loop
-        vTaskDelay(1);
+        vTaskDelay(1); 
     }
 
-    // REMOVED: i2s_channel_disable
     free(input_buf);
     free(pcm_buf);
     fclose(f);
     ESP_LOGI(TAG, "Playback Finished.");
+}
+
+void set_wled_bus_value(uint8_t value) {
+    // We only have 4 bits, so mask the value to 0-15
+    uint8_t val = value & 0x0F;
+
+    // Set each pin based on the specific bit in 'val'
+    gpio_set_level(WLED_OP_BIT1, (val >> 0) & 0x01);
+    gpio_set_level(WLED_OP_BIT2, (val >> 1) & 0x01);
+    gpio_set_level(WLED_OP_BIT4, (val >> 2) & 0x01);
+    gpio_set_level(WLED_OP_BIT8, (val >> 3) & 0x01);
+
+    ESP_LOGD("WLED_BUS", "Bus set to: %d (Binary: %d%d%d%d)", 
+             val, 
+             (val >> 3) & 0x01, (val >> 2) & 0x01, 
+             (val >> 1) & 0x01, (val >> 0) & 0x01);
 }
 
 // 1. Update the task to actually DO the work
