@@ -4,9 +4,8 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 ---
 **This version change**
-**Refactor: Integrated web portal play/sync logic. Increased max_uri_handlers to 12. Removed legacy WLED digital outputs test loop**
-**Status: Full MP3 integration complete. A .mp3 file can be sected and played from the web browser if a .csv file with matching name is also present on the SD card.**
-**Next step is to implement the .CSV marker file parsing so that it controls the 4 WLED outputs to create a binary code from 0 to 15**
+**Implemented the .CSV marker file parsing **
+**Next step is to control the 4 WLED outputs to create a binary code from 0 to 15**
 
 
 ## 📦 Component List (BOM)
@@ -19,7 +18,7 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 ### Software Dependencies (ESP-IDF v5.3+)
 To compile this project, the following components must be declared in your `main/CMakeLists.txt`:
-* `esp_driver_i2s`: Required for the I2S Standard Driver.
+* `esp_driver_i2s`: Required for the I2S Standard Driver..cpp to main.cpp
 * `fatfs` & `esp_vfs`: For the Virtual File System and SD card management.
 * `sdmmc`: For the 1-bit high-stability SD interface.
 * `esp_http_server`: Powers the remote management portal.
