@@ -554,48 +554,61 @@ void test_speaker_sine_repeater()
 // 7b. WAV Playback Test Function
 void play_wav_file(const char *path, int num_loops)
 {
+    // FORCE Stereo mode even though the file is Mono
+    // This ensures the MAX98357A sees the timing it expects
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
+        .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = { 
+            .mclk = I2S_GPIO_UNUSED, 
+            .bclk = (gpio_num_t)7, 
+            .ws = (gpio_num_t)15, 
+            .dout = (gpio_num_t)6, 
+            .din = I2S_GPIO_UNUSED,
+            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false }
+        }
+    };
+    
+    i2s_channel_reconfig_std_clock(tx_handle, &std_cfg.clk_cfg);
+    i2s_channel_reconfig_std_slot(tx_handle, &std_cfg.slot_cfg);
+
     for (int i = 1; i <= num_loops; i++)
     {
-        FILE *f = fopen(path, "rb"); // Open the WAV file in binary mode
-        if (f == NULL)
-        {
-            ESP_LOGE(TAG, "Failed to open file: %s", path);
-            return;
-        }
+        FILE *f = fopen(path, "rb");
+        if (!f) return;
 
-        ESP_LOGI(TAG, "--- Playing WAV Loop %d of %d ---", i, num_loops);
-
-        // Skip the 44-byte WAV header
-        fseek(f, 44, SEEK_SET); // Move the file pointer past the header to the start of audio data
+        // Use the REAPER-confirmed data start
+        fseek(f, 690, SEEK_SET); 
 
         const int chunk_size = 1024;
-        int16_t *buffer = (int16_t *)malloc(chunk_size);
+        int16_t *mono_buffer = (int16_t *)malloc(chunk_size);
+        // We need a second buffer to hold the "Stereo" version
+        int16_t *stereo_buffer = (int16_t *)malloc(chunk_size * 2); 
+        
         size_t bytes_read;
         size_t bytes_written;
 
-        // Enable I2S only while playing to save power/reduce noise
         i2s_channel_enable(tx_handle);
 
-        while ((bytes_read = fread(buffer, 1, chunk_size, f)) > 0)
+        while ((bytes_read = fread(mono_buffer, 1, chunk_size, f)) > 0)
         {
-            i2s_channel_write(tx_handle, buffer, bytes_read, &bytes_written, portMAX_DELAY);
+            int samples = bytes_read / sizeof(int16_t);
+            for (int s = 0; s < samples; s++) {
+                // Copy the same sample to both Left and Right channels
+                stereo_buffer[s*2] = mono_buffer[s];     // Left
+                stereo_buffer[s*2 + 1] = mono_buffer[s]; // Right
+            }
+            // Write twice the data (because it's now stereo)
+            i2s_channel_write(tx_handle, stereo_buffer, bytes_read * 2, &bytes_written, portMAX_DELAY);
         }
 
-        // Clean up current file handle
-        free(buffer); // Free the audio buffer
-        fclose(f);    // Close the file after playback
-
-        // Disable I2S during the silent period to prevent "hiss"
+        free(mono_buffer);
+        free(stereo_buffer);
+        fclose(f);
         i2s_channel_disable(tx_handle);
 
-        // If this wasn't the last loop, wait 1 seconds
-        if (i < num_loops)
-        {
-            ESP_LOGI(TAG, "WAV finished. Waiting 1 seconds before next loop...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
+        if (i < num_loops) vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    ESP_LOGI(TAG, "All %d WAV loops completed.", num_loops);
 }
 
 void update_i2s_sample_rate(int rate)

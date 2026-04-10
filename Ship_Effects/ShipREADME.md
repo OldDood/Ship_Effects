@@ -5,9 +5,10 @@ A high-performance automation and telemetry engine for a ship model display, run
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
 
-**This version has had a new GPIO 14 added an AUTO PLAY / DISABLE switch to control the playing of .MP#s without rebooting**
-**Need to add some minor enhancements to the web interface in future**
-**Need to do some changes to the code that plays the Audio.wav file, it seems like it is playing at the wrong speed now**
+**This version has had the playing of the test Audio.wav file fix**
+**As the WLED cannot decode binary inputs-**
+**In the next version, the digital outputs will be removed and replaced by a serial connection that issues WLED JSON commands**
+
 
 ## 📦 Component List (BOM)
 
