@@ -21,7 +21,8 @@ extern "C" int get_sunrise_mins();
 extern "C" int get_sunset_mins();
 
 // In a header file included by both main.cpp and web_portal.cpp
-typedef struct {
+typedef struct
+{
     char filename[64];
     bool sync_enabled;
 } playback_cmd_t;
@@ -236,6 +237,30 @@ esp_err_t storage_get_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, json_response);
 }
 
+esp_err_t set_default_handler(httpd_req_t *req)
+{
+    char query[256], filename[256];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        if (httpd_query_key_value(query, "file", filename, sizeof(filename)) == ESP_OK)
+        {
+            // Write the filename to autoplay.txt on the SD card
+            FILE *f = fopen("/sdcard/autoplay.txt", "w");
+            if (f == NULL)
+            {
+                ESP_LOGE(TAG, "Failed to open autoplay.txt for writing");
+                return httpd_resp_send_500(req);
+            }
+            fprintf(f, "%s", filename);
+            fclose(f);
+
+            ESP_LOGI(TAG, "Default song saved to SD card: %s", filename);
+            return httpd_resp_sendstr(req, "Default song saved successfully");
+        }
+    }
+    return httpd_resp_send_404(req);
+}
+
 esp_err_t solar_get_handler(httpd_req_t *req)
 {
     struct tm ti;
@@ -270,7 +295,7 @@ esp_err_t play_get_handler(httpd_req_t *req)
 {
     char query[256];
     // Create the struct we defined in main.h
-    playback_cmd_t cmd; 
+    playback_cmd_t cmd;
     memset(&cmd, 0, sizeof(playback_cmd_t));
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
@@ -280,7 +305,8 @@ esp_err_t play_get_handler(httpd_req_t *req)
         {
             // 2. Extract "sync" preference
             char sync_flag[10] = {0};
-            if (httpd_query_key_value(query, "sync", sync_flag, sizeof(sync_flag)) == ESP_OK) {
+            if (httpd_query_key_value(query, "sync", sync_flag, sizeof(sync_flag)) == ESP_OK)
+            {
                 cmd.sync_enabled = (strcmp(sync_flag, "1") == 0);
             }
 
@@ -301,7 +327,7 @@ esp_err_t play_get_handler(httpd_req_t *req)
 void start_web_portal()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;   // Increase the limit so it can hold all 9 of your URIs
+    config.max_uri_handlers = 12; // Increase the limit so it can hold all 9 of your URIs
     config.stack_size = 10240;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
@@ -334,6 +360,9 @@ void start_web_portal()
 
         httpd_uri_t play_uri = {.uri = "/play", .method = HTTP_GET, .handler = play_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &play_uri);
+
+        httpd_uri_t set_default_uri = {.uri = "/set_default", .method = HTTP_GET, .handler = set_default_handler, .user_ctx = NULL};
+        httpd_register_uri_handler(server, &set_default_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
 

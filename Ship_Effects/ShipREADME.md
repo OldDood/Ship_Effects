@@ -1,12 +1,15 @@
-### 🚢 ShipEffects S3 v1.1: Audio & Logic Engine
+### 🚢 ShipEffects S3 v1.2: Audio & Logic Engine
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
-**This version change**
-**Implemented the .CSV marker file parsing **
-**Next step is to control the 4 WLED outputs to create a binary code from 0 to 15**
+**Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
 
+**This version marks the transition from prototype to a robust automation engine.**
+**Major focus on filesystem hygiene, resource stability, and binary logic synchronization.**
+**This version has been fully tested**
+**Need to add some minor enhancements to the web interface in future**
+**Need to do some changes to the code that plays the Audio.wav file, it seems like it is playing at the wrong speed now**
 
 ## 📦 Component List (BOM)
 
@@ -17,7 +20,7 @@ A high-performance automation and telemetry engine for a ship model display, run
 * **Speaker:** 4Ω or 8Ω nominal impedance (connected to MAX98357A output).
 
 ### Software Dependencies (ESP-IDF v5.3+)
-To compile this project, the following components must be declared in your `main/CMakeLists.txt`:
+**To compile this project, the following components must be declared in your `main/CMakeLists.txt`:**
 * `esp_driver_i2s`: Required for the I2S Standard Driver..cpp to main.cpp
 * `fatfs` & `esp_vfs`: For the Virtual File System and SD card management.
 * `sdmmc`: For the 1-bit high-stability SD interface.
@@ -76,7 +79,7 @@ Streams audio from the SD card:
 * **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
 * **Stability Fix:** Task is now pinned to **Core 1** to avoid Core 0 Watchdog Timeouts during WiFi activity.
 
-**🎼 MP3 Decoder & Sync Engine**
+## 🎼 MP3 Decoder & Sync Engine
 The system utilizes a dedicated decoder task to bridge the gap between compressed SD data and the I2S DMA buffers.
 
 **Decoding:** Software-based MP3 decoding (libmad/minimp3) streaming to i2s_channel_write.
@@ -108,6 +111,14 @@ To trigger lighting effects without the overhead of network packets, the S3 comm
 7.  **Audio Task Launch:** Pinned to **Core 1** with a 10s wait for WiFi/Time sync to ensure DMA stability.
 
 ---
+## 🆕 New in v1.2 (Commit Changes)
+**Naming Police (Web Guard): Added client-side JavaScript validation to the Web Portal. Prevents filenames with spaces or special characters from reaching the SD card, eliminating URL-encoding traps (%20).**
+
+**Resource Expansion: Increased .max_files from 5 to 10 in the FatFS configuration to allow concurrent access by the Web Server and the Audio/CSV Task.**
+
+**Core Affinity: Audio Task is strictly pinned to Core 1 to prevent Watchdog (WDT) triggers during high WiFi traffic on Core 0.**
+
+**Enhanced Autoplay: Implemented a non-blocking autoplay.txt reader that initializes exactly 10 seconds post-boot to ensure SNTP time sync is complete.**
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).

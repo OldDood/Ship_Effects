@@ -30,6 +30,8 @@
 </head>
 <body>
 
+
+
 <div class="container">
     <h2>Ship Audio Management</h2>
 
@@ -171,6 +173,21 @@ async function playProject(name) {
         }
 
         const file = fileInput.files[0];
+
+        // --- NEW SAFETY CHECK START ---
+        // This allows only letters, numbers, underscores, and the dot before the extension.
+        // It specifically blocks spaces and the "%" character that causes the %20 trap.
+        const validPattern = /^[a-zA-Z0-9_.]+$/;
+        if (!validPattern.test(file.name)) {
+            alert("INVALID FILENAME DETECTED!\n\n" +
+                  "Current name: " + file.name + "\n\n" +
+                  "Please rename the file on your computer first.\n" +
+                  "Standard: Use only letters, numbers, and underscores (no spaces).");
+            fileInput.value = ""; // Reset the file picker
+            return;
+        }
+        // --- NEW SAFETY CHECK END ---
+        
         currentXhr = new XMLHttpRequest();
 
         progCont.style.display = 'block';

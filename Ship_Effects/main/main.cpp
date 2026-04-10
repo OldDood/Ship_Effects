@@ -37,6 +37,10 @@ See ShipREADME.md for project overview and details.
 
 #include "freertos/semphr.h" // Required for the Mutex
 
+#include <sys/stat.h>
+
+#include <dirent.h>
+
 #define MAX_MARKERS 16 // We are limiting to 16 for now as per your plan
 
 // --- Begin defining the data structures for the Audio Markers and Timeline
@@ -88,6 +92,9 @@ static EventGroupHandle_t s_system_event_group;
 
 void load_timeline_from_csv(const char* file_path);// Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value); // Forward declaration of the function to set the WLED bus value based on the marker ID
+void trigger_autoplay_from_sd(); // Forward declaration of the function to trigger autoplay from SD card on boot
+
+
 // This queue will hold the filename of the project we want to play
 static QueueHandle_t playback_queue = NULL;
 
@@ -247,7 +254,7 @@ esp_err_t init_sd_card()
 
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 5,
+        .max_files = 10,
         .allocation_unit_size = 16 * 1024,
         .disk_status_check_enable = false,
         .use_one_fat = false};
@@ -324,6 +331,35 @@ void init_wled_bus()
 
     gpio_reset_pin(WLED_OP_BIT8);
     gpio_set_direction(WLED_OP_BIT8, GPIO_MODE_OUTPUT);
+}
+
+void trigger_autoplay_from_sd() {
+    FILE *f = fopen("/sdcard/autoplay.txt", "r");
+    if (f == NULL) {
+        ESP_LOGI("BOOT", "No autoplay.txt found. Waiting for web command.");
+        return;
+    }
+
+    playback_cmd_t cmd;
+    memset(&cmd, 0, sizeof(playback_cmd_t));
+
+    if (fgets(cmd.filename, sizeof(cmd.filename), f) != NULL) {
+        // 1. Remove ANY trailing whitespace or control characters (\r, \n, spaces)
+        int len = strlen(cmd.filename);
+        while (len > 0 && (cmd.filename[len - 1] == '\n' || 
+                           cmd.filename[len - 1] == '\r' || 
+                           cmd.filename[len - 1] == ' ')) {
+            cmd.filename[--len] = '\0';
+        }
+
+        // 2. Safety check: Ensure we didn't end up with an empty string
+        if (strlen(cmd.filename) > 0) {
+            cmd.sync_enabled = true; 
+            ESP_LOGI("BOOT", "Auto-playing: [%s]", cmd.filename);
+            trigger_project_play(&cmd);
+        }
+    }
+    fclose(f);
 }
 
 // Adelaide, South Australia Coordinates
@@ -560,6 +596,18 @@ void update_i2s_sample_rate(int rate)
 
 void play_mp3_file(const char *path)
 {
+    // --- ADD THE DIAGNOSTIC BLOCK HERE ---
+    DIR *d = opendir("/sdcard");
+    if (d) {
+        struct dirent *de;
+        ESP_LOGW("FILESYSTEM", "--- SD Card Directory Listing ---");
+        while ((de = readdir(d)) != NULL) {
+            ESP_LOGI("FILESYSTEM", "Found: [%s]", de->d_name);
+        }
+        closedir(d);
+    }
+    // -------------------------------------
+    ESP_LOGI("DEBUG", "Attempting to open path: [%s]", path);
     FILE *f = fopen(path, "rb");
     if (f == NULL)
     {
@@ -829,6 +877,7 @@ extern "C" void app_main()
     init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
 
+
     // Launch the playback task with 16KB of stack
     playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));
     xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
@@ -846,7 +895,14 @@ if (ship_timeline.mutex == NULL) {
     // We NO LONGER call load_timeline_from_csv here, 
     // because the Audio Task will do it dynamically.
     ESP_LOGI("INIT", "Timeline Mutex created successfully.");
+
+    // --- THE GOLDEN MOMENT ---
+        // Everything above is now initialized. 
+        // We wait 1 second to let the Audio Task reach its 'while(1)' loop.
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        trigger_autoplay_from_sd();
 }
+
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
