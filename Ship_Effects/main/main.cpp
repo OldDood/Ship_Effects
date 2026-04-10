@@ -89,11 +89,14 @@ static EventGroupHandle_t s_system_event_group;
 #define WLED_OP_BIT4 (gpio_num_t)12 // GPIO pin for WLED Bit 4 (Value of 4)
 #define WLED_OP_BIT8 (gpio_num_t)13 // GPIO pin for WLED Bit 8 (Value of 8)
 
+#define AUTOPLAY_SWITCH_PIN (gpio_num_t)14 // GPIO pin connected to the physical switch for autoplay control
 
-void load_timeline_from_csv(const char* file_path);// Forward declaration of the function to load the timeline from a CSV file
-void set_wled_bus_value(uint8_t value); // Forward declaration of the function to set the WLED bus value based on the marker ID
-void trigger_autoplay_from_sd(); // Forward declaration of the function to trigger autoplay from SD card on boot
-
+void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
+void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
+void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
+// Volatile tells the compiler that this variable can change 
+// unexpectedly (since it's shared between two different CPU cores).
+volatile bool is_audio_playing = false;// This flag will be set to true when music starts playing, and false when it stops. Both the audio task and the main loop can read this variable to know if music is currently playing or not.
 
 // This queue will hold the filename of the project we want to play
 static QueueHandle_t playback_queue = NULL;
@@ -333,9 +336,23 @@ void init_wled_bus()
     gpio_set_direction(WLED_OP_BIT8, GPIO_MODE_OUTPUT);
 }
 
-void trigger_autoplay_from_sd() {
+// Initiate the GPIO pin for the autoplay switch with pull-up resistor
+void init_hardware()
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << AUTOPLAY_SWITCH_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE, // Use internal resistor
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE};
+    gpio_config(&io_conf);
+}
+
+void trigger_autoplay_from_sd()
+{
     FILE *f = fopen("/sdcard/autoplay.txt", "r");
-    if (f == NULL) {
+    if (f == NULL)
+    {
         ESP_LOGI("BOOT", "No autoplay.txt found. Waiting for web command.");
         return;
     }
@@ -343,19 +360,23 @@ void trigger_autoplay_from_sd() {
     playback_cmd_t cmd;
     memset(&cmd, 0, sizeof(playback_cmd_t));
 
-    if (fgets(cmd.filename, sizeof(cmd.filename), f) != NULL) {
+    if (fgets(cmd.filename, sizeof(cmd.filename), f) != NULL)
+    {
         // 1. Remove ANY trailing whitespace or control characters (\r, \n, spaces)
         int len = strlen(cmd.filename);
-        while (len > 0 && (cmd.filename[len - 1] == '\n' || 
-                           cmd.filename[len - 1] == '\r' || 
-                           cmd.filename[len - 1] == ' ')) {
+        while (len > 0 && (cmd.filename[len - 1] == '\n' ||
+                           cmd.filename[len - 1] == '\r' ||
+                           cmd.filename[len - 1] == ' '))
+        {
             cmd.filename[--len] = '\0';
         }
 
         // 2. Safety check: Ensure we didn't end up with an empty string
-        if (strlen(cmd.filename) > 0) {
-            cmd.sync_enabled = true; 
+        if (strlen(cmd.filename) > 0)
+        {
+            cmd.sync_enabled = true;
             ESP_LOGI("BOOT", "Auto-playing: [%s]", cmd.filename);
+            is_audio_playing = true; // Lock the system immediately!
             trigger_project_play(&cmd);
         }
     }
@@ -598,10 +619,12 @@ void play_mp3_file(const char *path)
 {
     // --- ADD THE DIAGNOSTIC BLOCK HERE ---
     DIR *d = opendir("/sdcard");
-    if (d) {
+    if (d)
+    {
         struct dirent *de;
         ESP_LOGW("FILESYSTEM", "--- SD Card Directory Listing ---");
-        while ((de = readdir(d)) != NULL) {
+        while ((de = readdir(d)) != NULL)
+        {
             ESP_LOGI("FILESYSTEM", "Found: [%s]", de->d_name);
         }
         closedir(d);
@@ -627,12 +650,18 @@ void play_mp3_file(const char *path)
 
     size_t bytes_left = 0;
     int last_rate = 0;
-    
+
     // --- NEW: Sync Variables ---
     uint64_t total_bytes_sent = 0;
 
     while (true)
     {
+        // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
+// Inside your while(true) decoding loop
+if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
+    ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
+    break; // Stops the music instantly
+}
         size_t n = fread(input_buf + bytes_left, 1, read_size - bytes_left, f);
         bytes_left += n;
 
@@ -651,28 +680,31 @@ void play_mp3_file(const char *path)
 
             size_t bytes_to_write = samples * info.channels * sizeof(int16_t);
             size_t bytes_written;
-            
+
             // Send PCM data to I2S
             i2s_channel_write(tx_handle, pcm_buf, bytes_to_write, &bytes_written, portMAX_DELAY);
-            
+
             // --- SYNC ENGINE START ---
             total_bytes_sent += bytes_written;
-            
+
             // Calculate current playback time in milliseconds
             // Formula: bytes / (samples_per_sec * channels * bytes_per_sample) * 1000
             // For 44100Hz Stereo 16-bit: total_bytes_sent / 176.4
             uint32_t current_ms = (uint32_t)(total_bytes_sent / (info.hz * info.channels * 2.0 / 1000.0));
 
             // Check if any markers need to fire
-            if (xSemaphoreTake(ship_timeline.mutex, 0) == pdTRUE) {
-                for (int i = 0; i < ship_timeline.count; i++) {
-                    if (!ship_timeline.markers[i].triggered && current_ms >= ship_timeline.markers[i].trigger_ms) {
-                        
+            if (xSemaphoreTake(ship_timeline.mutex, 0) == pdTRUE)
+            {
+                for (int i = 0; i < ship_timeline.count; i++)
+                {
+                    if (!ship_timeline.markers[i].triggered && current_ms >= ship_timeline.markers[i].trigger_ms)
+                    {
+
                         ship_timeline.markers[i].triggered = true; // Set flag so it only fires once
-                        
-                        ESP_LOGI("SYNC", ">>> TRIGGER MARKER %d at %ld ms (Track Time: %ld ms)", 
-                                 ship_timeline.markers[i].marker_id, 
-                                 ship_timeline.markers[i].trigger_ms, 
+
+                        ESP_LOGI("SYNC", ">>> TRIGGER MARKER %d at %ld ms (Track Time: %ld ms)",
+                                 ship_timeline.markers[i].marker_id,
+                                 ship_timeline.markers[i].trigger_ms,
                                  current_ms);
 
                         set_wled_bus_value(ship_timeline.markers[i].marker_id);
@@ -689,16 +721,18 @@ void play_mp3_file(const char *path)
             memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
         }
 
-        vTaskDelay(1); 
+        vTaskDelay(1);
     }
 
     free(input_buf);
     free(pcm_buf);
     fclose(f);
+    is_audio_playing = false; // OPEN the gate for the next track
     ESP_LOGI(TAG, "Playback Finished.");
 }
 
-void set_wled_bus_value(uint8_t value) {
+void set_wled_bus_value(uint8_t value)
+{
     // We only have 4 bits, so mask the value to 0-15
     uint8_t val = value & 0x0F;
 
@@ -708,9 +742,9 @@ void set_wled_bus_value(uint8_t value) {
     gpio_set_level(WLED_OP_BIT4, (val >> 2) & 0x01);
     gpio_set_level(WLED_OP_BIT8, (val >> 3) & 0x01);
 
-    ESP_LOGD("WLED_BUS", "Bus set to: %d (Binary: %d%d%d%d)", 
-             val, 
-             (val >> 3) & 0x01, (val >> 2) & 0x01, 
+    ESP_LOGD("WLED_BUS", "Bus set to: %d (Binary: %d%d%d%d)",
+             val,
+             (val >> 3) & 0x01, (val >> 2) & 0x01,
              (val >> 1) & 0x01, (val >> 0) & 0x01);
 }
 
@@ -792,7 +826,7 @@ void audio_playback_task(void *pvParameters)
                 load_timeline_from_csv(csv_path);
 
                 // 4. Start the playback
-                play_mp3_file(full_path);
+                play_mp3_file(full_path);                
             }
         }
         break; // This line is never actually reached in Case 3.
@@ -877,7 +911,6 @@ extern "C" void app_main()
     init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
 
-
     // Launch the playback task with 16KB of stack
     playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));
     xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
@@ -887,22 +920,27 @@ extern "C" void app_main()
     ship_timeline.mutex = xSemaphoreCreateMutex();
     ship_timeline.count = 0; // Start with an empty list
 
-if (ship_timeline.mutex == NULL) {
-    // This is a critical system failure (out of memory, etc.)
-    ESP_LOGE("INIT", "FATAL: Failed to create timeline mutex!");
-} else {
-    // Mutex is healthy. 
-    // We NO LONGER call load_timeline_from_csv here, 
-    // because the Audio Task will do it dynamically.
-    ESP_LOGI("INIT", "Timeline Mutex created successfully.");
+    if (ship_timeline.mutex == NULL)
+    {
+        // This is a critical system failure (out of memory, etc.)
+        ESP_LOGE("INIT", "FATAL: Failed to create timeline mutex!");
+    }
+    else
+    {
+        // Mutex is healthy.
+        // We NO LONGER call load_timeline_from_csv here,
+        // because the Audio Task will do it dynamically.
+        ESP_LOGI("INIT", "Timeline Mutex created successfully.");
 
-    // --- THE GOLDEN MOMENT ---
-        // Everything above is now initialized. 
+        // --- THE GOLDEN MOMENT ---
+        // Everything above is now initialized.
         // We wait 1 second to let the Audio Task reach its 'while(1)' loop.
         vTaskDelay(pdMS_TO_TICKS(1000));
-        trigger_autoplay_from_sd();
-}
-
+        if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 1)
+        {
+            trigger_autoplay_from_sd();
+        }
+    }
 
     // 3. HARDWARE & TIME RESTORATION
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -917,10 +955,28 @@ if (ship_timeline.mutex == NULL) {
         ESP_LOGI("TIME", "Cold boot or time not yet synced.");
     }
 
+    // Initialize to a "dummy" value so the first check on boot always triggers a log
+    int last_switch_state = -1;
     // --- MAIN LOOP ---
     while (1)
     {
-        // ... your loop logic ...
-        vTaskDelay(pdMS_TO_TICKS(100)); // Placeholder delay to prevent watchdog resets. Replace with actual logic.
+int current_switch_state = gpio_get_level(AUTOPLAY_SWITCH_PIN);
+
+    // --- LOGGING LOGIC: Trigger on boot (-1) or when state changes ---
+    if (current_switch_state != last_switch_state) {
+        if (current_switch_state == 1) {
+            ESP_LOGI("AUTO", "Switch flipped to ON (Armed)");
+        } else {
+            ESP_LOGW("AUTO", "Switch flipped to OFF (Disarmed)");
+        }
+        last_switch_state = current_switch_state; // Update the memory
+    }
+
+    // --- EXECUTION LOGIC ---
+    if (current_switch_state == 1 && !is_audio_playing) {
+        is_audio_playing = true; // LOCK the gate immediately
+        trigger_autoplay_from_sd(); 
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Check every second
     }
 }

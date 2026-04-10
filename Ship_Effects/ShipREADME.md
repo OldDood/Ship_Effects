@@ -5,9 +5,7 @@ A high-performance automation and telemetry engine for a ship model display, run
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
 
-**This version marks the transition from prototype to a robust automation engine.**
-**Major focus on filesystem hygiene, resource stability, and binary logic synchronization.**
-**This version has been fully tested**
+**This version has had a new GPIO 14 added an AUTO PLAY / DISABLE switch to control the playing of .MP#s without rebooting**
 **Need to add some minor enhancements to the web interface in future**
 **Need to do some changes to the code that plays the Audio.wav file, it seems like it is playing at the wrong speed now**
 
@@ -28,8 +26,6 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 ---
 
-It’s a good idea to keep the documentation in sync with the physical reality of the workbench. I've updated the table to include your weighted WLED outputs and refined the notes to reflect the latest measurements and configurations.
-
 ## 🛠 Hardware Pinout (Confirmed v1.2)
 
 | Component | GPIO Pin | Configuration / Notes |
@@ -46,6 +42,7 @@ It’s a good idea to keep the documentation in sync with the physical reality o
 | **WLED_OP_BIT2** | `11` | **Parallel Bus Bit 1.** Weighted value: 2. |
 | **WLED_OP_BIT4** | `12` | **Parallel Bus Bit 2.** Weighted value: 4. |
 | **WLED_OP_BIT8** | `13` | **Parallel Bus Bit 3.** Weighted value: 8. |
+| **AUTOPLAY SW** | `14` | **Master Toggle.** Internal Pull-up enabled. |
 
 ---
 
@@ -119,6 +116,41 @@ To trigger lighting effects without the overhead of network packets, the S3 comm
 **Core Affinity: Audio Task is strictly pinned to Core 1 to prevent Watchdog (WDT) triggers during high WiFi traffic on Core 0.**
 
 **Enhanced Autoplay: Implemented a non-blocking autoplay.txt reader that initializes exactly 10 seconds post-boot to ensure SNTP time sync is complete.**
+
+## 🕹️ Physical Control & Safety Logic
+**Version 1.2 introduces a hardware-based "Master Override" to manage the ship's autonomous behavior without needing a network connection.**
+
+**1. Autoplay Toggle Switch**
+**A physical toggle switch is monitored via a background polling task on Core 0.**
+
+**GPIO Pin: 14 (Configured with Internal Pull-up).**
+
+**ARMED (High/1): The system periodically checks the SD card for autoplay.txt and initiates playback sequences.**
+
+**DISARMED (Low/0): All autonomous triggers are inhibited.**
+
+**2. Instant-Kill Functionality**
+**To ensure the ship can be silenced immediately, the audio decoding loop performs a "Live-Check" on the hardware state.**
+
+**Logic: If the switch is flipped to OFF mid-track, the I2S stream is truncated, memory buffers are freed, and the file is closed within milliseconds.**
+
+**Safety: This prevents "Zombie Tasks" from running in the background when the user expects silence.**
+
+**3. Concurrency Protection (Busy Semaphore)**
+**To prevent the system from "stepping on its own toes," a global Volatile Boolean (is_audio_playing) acts as a digital gatekeeper.**
+
+**Operation: The system will refuse any new playback commands (Web or Autoplay) if the Busy Flag is active.**
+
+**Recovery: The flag is automatically reset to false upon natural track completion or a hardware Kill-Switch event.**
+
+**📊 System State Logging (Diagnostic Output)**
+**The console output has been optimized to report state changes only when they occur, preventing log-spam while maintaining visibility:**
+
+**Log Message	Trigger Condition**
+AUTO: Switch flipped to ON (Armed)	Detected transition from 0 to 1 (or at Boot).
+AUTO: Switch flipped to OFF (Disarmed)	Detected transition from 1 to 0.
+AUDIO: Switch DISARMED: Killing playback.	Switch flipped to OFF while is_audio_playing was true.
+BOOT: Auto-playing: [Filename]	Valid autoplay.txt entry found and system is Idle.
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
