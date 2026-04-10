@@ -1,6 +1,12 @@
 /* Ship Effects Main Application
 See ShipREADME.md for project overview and details.
 */
+#include "driver/uart.h"
+
+// Define the UART port if it isn't defined by the board config
+#ifndef UART_NUM_1
+#define UART_NUM_1 (uart_port_t)1
+#endif
 
 #include <errno.h>
 #include <string.h>
@@ -84,16 +90,18 @@ static EventGroupHandle_t s_system_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define SNTP_SYNCED_BIT BIT1
 
-#define WLED_OP_BIT1 (gpio_num_t)10 // GPIO pin for WLED Bit 1 (Value of 1)
-#define WLED_OP_BIT2 (gpio_num_t)11 // GPIO pin for WLED Bit 2 (Value of 2)
-#define WLED_OP_BIT4 (gpio_num_t)12 // GPIO pin for WLED Bit 4 (Value of 4)
-#define WLED_OP_BIT8 (gpio_num_t)13 // GPIO pin for WLED Bit 8 (Value of 8)
-
 #define AUTOPLAY_SWITCH_PIN (gpio_num_t)14 // GPIO pin connected to the physical switch for autoplay control
 
 void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
+/**
+ * @brief Prototype for the WLED Serial Bridge
+ * Sends a JSON preset command based on the timeline marker_id.
+ */
+void send_wled_command(uint8_t marker_id); // Forward declaration of the function to send a command to WLED based on the marker ID
+void init_wled_serial(void); // Forward declaration of the function to initialize the UART for WLED communication
+
 // Volatile tells the compiler that this variable can change 
 // unexpectedly (since it's shared between two different CPU cores).
 volatile bool is_audio_playing = false;// This flag will be set to true when music starts playing, and false when it stops. Both the audio task and the main loop can read this variable to know if music is currently playing or not.
@@ -320,21 +328,6 @@ esp_err_t un_init_sd_card()
     return ret;
 }
 
-void init_wled_bus()
-{
-    // Reset and set each pin as output individually
-    gpio_reset_pin(WLED_OP_BIT1);
-    gpio_set_direction(WLED_OP_BIT1, GPIO_MODE_OUTPUT);
-
-    gpio_reset_pin(WLED_OP_BIT2);
-    gpio_set_direction(WLED_OP_BIT2, GPIO_MODE_OUTPUT);
-
-    gpio_reset_pin(WLED_OP_BIT4);
-    gpio_set_direction(WLED_OP_BIT4, GPIO_MODE_OUTPUT);
-
-    gpio_reset_pin(WLED_OP_BIT8);
-    gpio_set_direction(WLED_OP_BIT8, GPIO_MODE_OUTPUT);
-}
 
 // Initiate the GPIO pin for the autoplay switch with pull-up resistor
 void init_hardware()
@@ -628,6 +621,54 @@ void update_i2s_sample_rate(int rate)
     i2s_channel_enable(tx_handle);
 }
 
+void init_wled_serial() {
+    // 1. Configure the UART parameters
+    const uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    // 2. Install the driver (Port 1, RX buffer 2048, TX buffer 0, no event queue)
+    esp_err_t err = uart_driver_install(UART_NUM_1, 2048, 0, 0, NULL, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE("WLED", "Failed to install UART driver!");
+        return;
+    }
+
+    // 3. Apply the configuration
+    uart_param_config(UART_NUM_1, &uart_config);
+
+    // 4. Set the pins (TX: GPIO 17, RX: GPIO 18)
+    // You can change 17/18 to whatever pins you have free on the S3
+    uart_set_pin(UART_NUM_1, 17, 18, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    
+    ESP_LOGI("WLED", "Serial Bridge Initialized on UART1 (TX:17, RX:18)");
+}
+
+void send_wled_command(uint8_t marker_id)
+{
+    // Safety check: 0 is usually 'off' or 'idle' in WLED, 
+    // so we only send if the ID is within our expected range.
+    if (marker_id < 1 || marker_id > 16) {
+        ESP_LOGW("WLED", "Invalid marker_id: %d (Skipping)", marker_id);
+        return;
+    }
+
+    char json_cmd[32];
+    // Format: {"ps": 1} through {"ps": 16}
+    // We include \n because WLED's serial parser uses it as a frame delimiter.
+    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
+
+    // Write to UART1 (Assuming UART1 is your WLED bridge)
+    uart_write_bytes(UART_NUM_1, json_cmd, len);
+    
+    ESP_LOGI("WLED", "Marker %d -> WLED JSON sent: %s", marker_id, json_cmd);
+}
+
 void play_mp3_file(const char *path)
 {
     // --- ADD THE DIAGNOSTIC BLOCK HERE ---
@@ -669,7 +710,7 @@ void play_mp3_file(const char *path)
 
     while (true)
     {
-        // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
+    // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
 // Inside your while(true) decoding loop
 if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
     ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
@@ -720,7 +761,7 @@ if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
                                  ship_timeline.markers[i].trigger_ms,
                                  current_ms);
 
-                        set_wled_bus_value(ship_timeline.markers[i].marker_id);
+                        send_wled_command(ship_timeline.markers[i].marker_id);// The new Serial link;
                     }
                 }
                 xSemaphoreGive(ship_timeline.mutex);
@@ -744,22 +785,6 @@ if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
     ESP_LOGI(TAG, "Playback Finished.");
 }
 
-void set_wled_bus_value(uint8_t value)
-{
-    // We only have 4 bits, so mask the value to 0-15
-    uint8_t val = value & 0x0F;
-
-    // Set each pin based on the specific bit in 'val'
-    gpio_set_level(WLED_OP_BIT1, (val >> 0) & 0x01);
-    gpio_set_level(WLED_OP_BIT2, (val >> 1) & 0x01);
-    gpio_set_level(WLED_OP_BIT4, (val >> 2) & 0x01);
-    gpio_set_level(WLED_OP_BIT8, (val >> 3) & 0x01);
-
-    ESP_LOGD("WLED_BUS", "Bus set to: %d (Binary: %d%d%d%d)",
-             val,
-             (val >> 3) & 0x01, (val >> 2) & 0x01,
-             (val >> 1) & 0x01, (val >> 0) & 0x01);
-}
 
 // 1. Update the task to actually DO the work
 void audio_playback_task(void *pvParameters)
@@ -918,11 +943,11 @@ extern "C" void app_main()
 
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
-    init_wled_bus();    // Initialize the WLED control pins early so they are ready for use in the web portal and any other logic.
     init_sd_card();     // SD Card must be initialized before the web portal, which may serve files from it.
     init_wifi();        // WiFi should be started before SNTP to ensure time can be synced.
     init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
+    init_wled_serial();
 
     // Launch the playback task with 16KB of stack
     playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));

@@ -1,14 +1,15 @@
-### 🚢 ShipEffects S3 v1.2: Audio & Logic Engine
+### 🚢 ShipEffects S3 v1.3: Audio & Logic Engine
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
 
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
 
-**This version has had the playing of the test Audio.wav file fix**
-**As the WLED cannot decode binary inputs-**
-**In the next version, the digital outputs will be removed and replaced by a serial connection that issues WLED JSON commands**
+**This version addition-**
+**WLED digital outputs have been removed as WLED controller does not support decoding**
+**A serial connection on UART1 that issues WLED JSON commands**
 
+**ToDo:- The serial bus interface to the WLED Controller needs verifying**
 
 ## 📦 Component List (BOM)
 
@@ -24,6 +25,10 @@ A high-performance automation and telemetry engine for a ship model display, run
 * `fatfs` & `esp_vfs`: For the Virtual File System and SD card management.
 * `sdmmc`: For the 1-bit high-stability SD interface.
 * `esp_http_server`: Powers the remote management portal.
+* `esp_wifi`: Manages the physical radio and 802.11 stack; handles the connection to your Access Point and maintains the link for the Web Portal.
+* `esp_event`: The system's "Post Office"; allows different parts of your code (like WiFi and the Web Server) to communicate via background signals without clashing.
+* `nvs_flash`: (Non-Volatile Storage): A digital notebook in the flash memory that saves your WiFi credentials and system settings so they aren't lost when the power is turned off.
+* `esp_driver_uart`:The dedicated hardware controller for serial communication; manages the timing and memory buffers for the JSON command link to WLED.
 
 ---
 
@@ -39,10 +44,8 @@ A high-performance automation and telemetry engine for a ship model display, run
 | **I2S DIN** | `6` | **Data Out.** Digital audio stream to MAX98357A. |
 | **AMP SD** | `4` | **Shutdown.** Measured at 3V (Amp Active). |
 | **AMP GAIN** | `5` | **Gain.** Measured at 3.165V (**12dB** standard floor). |
-| **WLED_OP_BIT1** | `10` | **Parallel Bus Bit 0.** Weighted value: 1. |
-| **WLED_OP_BIT2** | `11` | **Parallel Bus Bit 1.** Weighted value: 2. |
-| **WLED_OP_BIT4** | `12` | **Parallel Bus Bit 2.** Weighted value: 4. |
-| **WLED_OP_BIT8** | `13` | **Parallel Bus Bit 3.** Weighted value: 8. |
+| **UART_NUM_1 TX** | `17` | T**X serial pin to WLED Controller** |
+| **UART_NUM_1 RX** | `18` | **RX serial pin from WLED Controller**|
 | **AUTOPLAY SW** | `14` | **Master Toggle.** Internal Pull-up enabled. |
 
 ---
@@ -84,20 +87,16 @@ The system utilizes a dedicated decoder task to bridge the gap between compresse
 
 **Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
 ---
-## 💡 WLED Parallel Interface
-To trigger lighting effects without the overhead of network packets, the S3 communicates via a **4-bit physical parallel bus** to the WLED controller.
+## 🛰️ Serial bus to WLED controller
 
-| Bit | GPIO | Weight | Function |
-| :--- | :--- | :--- | :--- |
-| **0** | `10` | 1 | **LSB** - Effect Trigger |
-| **1** | `11` | 2 | Effect Trigger |
-| **2** | `12` | 4 | Effect Trigger |
-| **3** | `13` | 8 | **MSB** - Effect Trigger |
+**1. WLED JSON Serial Bridge**
+**Protocol: Asynchronous Serial (UART)**
 
-* **Logic Level:** 3.3V CMOS.
-* **Protocol:** The S3 sets the 4-bit state → WLED reads the integer value (0–15) → WLED executes the corresponding Preset or Segment effect.
-* **Timing:** Bit states are held for the duration of the audio event to prevent ghost triggers.
-* **Safety:** Pins are initialized as push-pull outputs to ensure clean logic transitions.
+**Baud Rate: 115200**
+
+**Data Format: JSON (e.g., {"ps": 1})**
+
+**Hardware Path: GPIO 17 (TX) -> WLED RX | GPIO 18 (RX) (Reserved)**
 
 ## 🚀 Execution Flow (`app_main`)
 1.  **NVS Init:** Prepares flash for WiFi credentials.
