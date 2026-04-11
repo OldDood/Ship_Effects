@@ -992,12 +992,21 @@ extern "C" void app_main()
     {
         ESP_LOGI("TIME", "Cold boot or time not yet synced.");
     }
-
+    uint8_t loopback_buf[128]; // Buffer for incoming serial data
     // Initialize to a "dummy" value so the first check on boot always triggers a log
     int last_switch_state = -1;
     // --- MAIN LOOP ---
     while (1)
     {
+
+        // --- 1. THE LOOPBACK CHECK ---
+    // Look at UART_NUM_1 to see if we heard our own TX
+    int len = uart_read_bytes(UART_NUM_1, loopback_buf, sizeof(loopback_buf) - 1, 20 / portTICK_PERIOD_MS);
+    if (len > 0) {
+        loopback_buf[len] = '\0'; // Null-terminate
+        ESP_LOGI("DEBUG", "Serial Loopback HEARD: %s", (char*)loopback_buf);
+    }
+
 int current_switch_state = gpio_get_level(AUTOPLAY_SWITCH_PIN);
 
     // --- LOGGING LOGIC: Trigger on boot (-1) or when state changes ---

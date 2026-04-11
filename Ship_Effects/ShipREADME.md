@@ -1,23 +1,25 @@
 ### 🚢 ShipEffects S3 v1.3: Audio & Logic Engine
 
-A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio** and **Solar-aware** control system.
+A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio**
 
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
+**This version is fully functional and tested**
 
-**This version addition-**
-**WLED digital outputs have been removed as WLED controller does not support decoding**
-**A serial connection on UART1 that issues WLED JSON commands**
+## Critical Integration Note:
 
-**ToDo:- The serial bus interface to the WLED Controller needs verifying**
+**WLED Controller: This project requires WLED v0.15.0-b7 "Full" (or later). Standard or "gcc" builds often lack the Serial JSON API required to trigger ship effects.**
+
+**Communication: Legacy 4-bit parallel digital outputs have been deprecated and removed. Control is now handled via a 2-wire Serial JSON Bridge.**
 
 ## 📦 Component List (BOM)
 
 ### Core Hardware
-* **Microcontroller:** Freenove ESP32-S3-WROOM (Camera Module variant with on board SD Card Reader). The camera is not used in this project.
+* **Microcontroller:** This projects software target - Freenove ESP32-S3-WROOM (Camera Module variant with on board SD Card Reader). The camera is not used in this project.
 * **Audio Amplifier:** MAX98357A I2S Class-D Mono Amp.
 * **Storage:** Micro SD Card (formatted to FAT32, up to 32GB supported).
 * **Speaker:** 4Ω or 8Ω nominal impedance (connected to MAX98357A output).
+* **ESP32 configured with binary file WLED v0.15.0-b7 "Full"** -This is not the processor for this projects software, it is **external** hardware
 
 ### Software Dependencies (ESP-IDF v5.3+)
 **To compile this project, the following components must be declared in your `main/CMakeLists.txt`:**
@@ -51,20 +53,45 @@ A high-performance automation and telemetry engine for a ship model display, run
 ---
 
 ### Integration Notes:
-* **WLED Interface:** The 4-bit bus provides 15 unique trigger IDs (plus 0 for idle).
+* **WLED Interface:** The 4-bit bus provides 15 unique trigger IDs via serial interface to WLED(plus 0 for idle).
 * **Safety Logic:** All WLED output pins are initialized as push-pull outputs to ensure clean logic transitions for the receiver.
 * **Audio Sync:** GPIOs 10-13 are updated via the marker parser during I2S playback.
-
-Once you commit this, your README will be a perfect "as-built" record of the hardware! Ready to start on that `M.S.CS` parser logic?
 
 ## ⚙️ Project Configuration (`menuconfig`)
 The project now utilizes `Kconfig.projbuild` for rapid field adjustments without code changes:
 * **WiFi Credentials:** SSID and Password managed via the UI.
-* **Audio Mode Selector:** 1. **Internal (1):** Diagnostic Sine Sweep (300Hz–2400Hz).
+* Search for "ship" in menuconfig for mode selector
+ **Audio Mode Selector:** 1. **Internal (1):** Diagnostic Sine Sweep (300Hz–2400Hz).
     2. **WAV (2):** Diagnostic SD Card Playback (e.g., `ship_horn.wav`).
     3. **MP3 (3):** Compressed storage playback. (This is normal operating mode)
 
 ---
+## 📂 Mandatory SDCard Files
+To ensure the ShipEffects S3 engine initializes correctly and synchronizes with the WLED controller, the following files must be present in the root directory of the SD card (Formatted to FAT32).
+
+**1. autoplay.txt**
+This file acts as the master script for the ship's autonomous behavior.
+
+Purpose: Contains the filename of the track to be played automatically 10 seconds after boot.
+
+Format: Plain text containing only the filename (e.g., storm_sequence.mp3).
+
+**2. ship_horn.wav (or designated MP3)**
+Purpose: Standard diagnostic and system sound file for mode 2.
+
+**3. i2S Test.mp3 and TestAudio\i2S Test.csv**
+Purpose: Auto play files for mode 3 if sutoplay.txt contains the line - TestAudio\i2S Test.csv
+
+These file are stored for backup in the ESP_IDF project directory "Ship_Effects"
+**SDCard required files**
+TestAudio\autoplay.txt
+TestAudio\TestAudio\i2S Test.csv.csv
+TestAudio\i2S Test.mp3
+TestAudio\ship_horn.wav
+**Backup for WLED presets**
+TestAudio\wled_presets.json
+**Configuration file for serial testing program for WLED serial interface using the program "Yat"** https://sourceforge.net/projects/y-a-terminal/
+TestAudio\Ship_Project.yat
 
 ## 🧪 Audio Execution Modes
 ### 1. Diagnostic Suite: `test_speaker_sine_repeater`
@@ -108,49 +135,19 @@ The system utilizes a dedicated decoder task to bridge the gap between compresse
 7.  **Audio Task Launch:** Pinned to **Core 1** with a 10s wait for WiFi/Time sync to ensure DMA stability.
 
 ---
-## 🆕 New in v1.2 (Commit Changes)
-**Naming Police (Web Guard): Added client-side JavaScript validation to the Web Portal. Prevents filenames with spaces or special characters from reaching the SD card, eliminating URL-encoding traps (%20).**
+## 🛰️ WLED Serial JSON Bridge (v1.3)Protocol: Asynchronous Serial (UART)Baud Rate: 115200 
+Format: JSON-encapsulated commands.Operational Logic: The S3 Master Engine parses markers within the MP3 stream. Upon hitting a marker, a JSON command message sent via UART1 to the WLED controller. These commands control the presets on the WLED controller. Other commands can be added if required by modifying send_wled_command(uint8_t marker_id) function in main.cpp
 
-**Resource Expansion: Increased .max_files from 5 to 10 in the FatFS configuration to allow concurrent access by the Web Server and the Audio/CSV Task.**
+## 📡 WLED Control Command  Example
+**To trigger a specific preset (e.g., Preset 1), the Master S3 sends the following JSON object over UART:**
+{"ps": 1}
+**Field Definition:**
+**ps (Preset): The ID of the preset to activate. This corresponds to preset ID1 in the WLED web interface.**
 
-**Core Affinity: Audio Task is strictly pinned to Core 1 to prevent Watchdog (WDT) triggers during high WiFi traffic on Core 0.**
+## 🕹️ Physical On and off switch on GPIO14
+**"Master Override" to enable or disable the automatic play of the .MP3 listed in autoplay.txt on the located on theSD card.**
+example text - i2S_Test - will play I2S_Test.mp3 located on the SD Card
 
-**Enhanced Autoplay: Implemented a non-blocking autoplay.txt reader that initializes exactly 10 seconds post-boot to ensure SNTP time sync is complete.**
-
-## 🕹️ Physical Control & Safety Logic
-**Version 1.2 introduces a hardware-based "Master Override" to manage the ship's autonomous behavior without needing a network connection.**
-
-**1. Autoplay Toggle Switch**
-**A physical toggle switch is monitored via a background polling task on Core 0.**
-
-**GPIO Pin: 14 (Configured with Internal Pull-up).**
-
-**ARMED (High/1): The system periodically checks the SD card for autoplay.txt and initiates playback sequences.**
-
-**DISARMED (Low/0): All autonomous triggers are inhibited.**
-
-**2. Instant-Kill Functionality**
-**To ensure the ship can be silenced immediately, the audio decoding loop performs a "Live-Check" on the hardware state.**
-
-**Logic: If the switch is flipped to OFF mid-track, the I2S stream is truncated, memory buffers are freed, and the file is closed within milliseconds.**
-
-**Safety: This prevents "Zombie Tasks" from running in the background when the user expects silence.**
-
-**3. Concurrency Protection (Busy Semaphore)**
-**To prevent the system from "stepping on its own toes," a global Volatile Boolean (is_audio_playing) acts as a digital gatekeeper.**
-
-**Operation: The system will refuse any new playback commands (Web or Autoplay) if the Busy Flag is active.**
-
-**Recovery: The flag is automatically reset to false upon natural track completion or a hardware Kill-Switch event.**
-
-**📊 System State Logging (Diagnostic Output)**
-**The console output has been optimized to report state changes only when they occur, preventing log-spam while maintaining visibility:**
-
-**Log Message	Trigger Condition**
-AUTO: Switch flipped to ON (Armed)	Detected transition from 0 to 1 (or at Boot).
-AUTO: Switch flipped to OFF (Disarmed)	Detected transition from 1 to 0.
-AUDIO: Switch DISARMED: Killing playback.	Switch flipped to OFF while is_audio_playing was true.
-BOOT: Auto-playing: [Filename]	Valid autoplay.txt entry found and system is Idle.
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
