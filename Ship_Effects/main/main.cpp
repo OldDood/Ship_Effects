@@ -81,6 +81,12 @@ marker_timeline_t ship_timeline;
 
 static const char *TAG = "ShipEffects";
 
+ // External function located in main.cpp
+extern "C" void set_master_volume(int vol_percent);
+// Global volume (0.0 to 1.0). 
+// Using a float for smooth multiplication in the audio loop.
+static float master_volume = 0.5f; 
+
 // WiFi Macros from your menuconfig
 #define WIFI_SSID CONFIG_WIFI_SSID
 #define WIFI_PASS CONFIG_WIFI_PASS
@@ -561,7 +567,8 @@ void play_wav_file(const char *path, int num_loops)
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false }
         }
     };
-    
+
+   
     i2s_channel_reconfig_std_clock(tx_handle, &std_cfg.clk_cfg);
     i2s_channel_reconfig_std_slot(tx_handle, &std_cfg.slot_cfg);
 
@@ -603,6 +610,7 @@ void play_wav_file(const char *path, int num_loops)
         if (i < num_loops) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+
 
 void update_i2s_sample_rate(int rate)
 {
@@ -732,6 +740,19 @@ if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
                 last_rate = info.hz;
             }
 
+            // --- NEW: Apply Volume Scaling ---
+            // 'samples' is samples per channel. Total samples = samples * info.channels
+            int total_samples = samples * info.channels;
+            float current_gain = master_volume; // Local copy to prevent changes mid-buffer
+
+            for (int i = 0; i < total_samples; i++) {
+                // Multiply sample by gain and clip to 16-bit boundaries
+                int32_t val = (int32_t)(pcm_buf[i] * current_gain);
+                if (val > 32767) val = 32767;
+                if (val < -32768) val = -32768;
+                pcm_buf[i] = (int16_t)val;
+            }
+
             size_t bytes_to_write = samples * info.channels * sizeof(int16_t);
             size_t bytes_written;
 
@@ -783,6 +804,17 @@ if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
     fclose(f);
     is_audio_playing = false; // OPEN the gate for the next track
     ESP_LOGI(TAG, "Playback Finished.");
+}
+
+
+
+extern "C" void set_master_volume(int vol_percent) {
+    if (vol_percent < 0) vol_percent = 0;
+    if (vol_percent > 100) vol_percent = 100;
+    
+    // Convert 0-100 to 0.0-1.0
+    master_volume = vol_percent / 100.0f;
+    ESP_LOGI("AUDIO", "Master Volume set to: %d%%", vol_percent);
 }
 
 

@@ -9,8 +9,8 @@
 #include "esp_vfs_fat.h"
 #include <time.h>
 
-extern const uint8_t web_portal_html_start[] asm("_binary_web_portal_html_start");
-extern const uint8_t web_portal_html_end[] asm("_binary_web_portal_html_end");
+extern const uint8_t ship_web_html_start[] asm("_binary_ship_web_html_start");
+extern const uint8_t ship_web_html_end[]   asm("_binary_ship_web_html_end");
 
 static const char *TAG = "WebPortal";
 httpd_handle_t server = NULL;
@@ -34,19 +34,17 @@ extern "C" void trigger_project_play(playback_cmd_t *cmd);
 
 esp_err_t index_get_handler(httpd_req_t *req)
 {
-    ESP_LOGW("DEBUG", "===> ROOT HANDLER TRIGGERED <===");
-    extern const uint8_t web_portal_html_start[] asm("_binary_ship_web_html_start");
-    extern const uint8_t web_portal_html_end[] asm("_binary_ship_web_html_end");
-    // Force a hard pointer check
-    const char *data = (const char *)web_portal_html_start;
-    size_t len = web_portal_html_end - web_portal_html_start;
-    // --- ADD THIS LINE HERE ---
-    ESP_LOGW("DEBUG", "Address of data: %p", (void *)web_portal_html_start);
-    // -
-    // DIAGNOSTIC: If the first 5 characters aren't HTML,
-    // the linker is definitely pointing to your .cpp file.
+    // 2. Use the symbols directly
+    const char *data = (const char *)ship_web_html_start;
+    size_t len = ship_web_html_end - ship_web_html_start;
 
-    ESP_LOGI(TAG, "First 5 bytes of index: %.5s", data);
+    // 3. Keep your diagnostic logs to verify the update
+    ESP_LOGW("DEBUG", "===> ROOT HANDLER TRIGGERED <===");
+    ESP_LOGW("DEBUG", "Address of data: %p | Size: %zu bytes", (void *)ship_web_html_start, len);
+    
+    // This will tell you immediately if you're looking at the new code
+    // Look for your new <input type="range"> or functions in the logs
+    ESP_LOGI(TAG, "First 20 bytes: %.20s", data);
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, data, len);
@@ -322,6 +320,30 @@ esp_err_t play_get_handler(httpd_req_t *req)
     return httpd_resp_send_404(req);
 }
 
+// External function located in main.cpp
+extern "C" void set_master_volume(int vol_percent);
+
+esp_err_t volume_get_handler(httpd_req_t *req)
+{
+    char query[256];
+    char vol_str[10];
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        if (httpd_query_key_value(query, "val", vol_str, sizeof(vol_str)) == ESP_OK)
+        {
+            int vol = atoi(vol_str);
+            set_master_volume(vol);
+            
+            char resp[32];
+            snprintf(resp, sizeof(resp), "Volume set to %d%%", vol);
+            httpd_resp_sendstr(req, resp);
+            return ESP_OK;
+        }
+    }
+    return httpd_resp_send_404(req);
+}
+
 // --- Server Control ---
 
 void start_web_portal()
@@ -363,6 +385,9 @@ void start_web_portal()
 
         httpd_uri_t set_default_uri = {.uri = "/set_default", .method = HTTP_GET, .handler = set_default_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &set_default_uri);
+
+        httpd_uri_t volume_uri = {.uri = "/volume", .method = HTTP_GET, .handler = volume_get_handler, .user_ctx = NULL};
+        httpd_register_uri_handler(server, &volume_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
 

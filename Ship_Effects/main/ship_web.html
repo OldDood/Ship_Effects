@@ -1,102 +1,215 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Ship Effects Control</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="data:,">
     <style>
-        body { font-family: Arial; margin: 20px; background-color: #f4f4f4; }
-        .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        h2 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
-        .section { margin-bottom: 20px; padding: 15px; background: #fafafa; border-radius: 5px; border: 1px solid #eee; }
-        .file-list { margin-top: 10px; }
-        .file-item { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #eee; align-items: center; }
-        .btn { padding: 8px 12px; cursor: pointer; border: none; border-radius: 4px; color: white; text-decoration: none; font-size: 14px; display: inline-block; }
-        .btn-upload { background-color: #28a745; margin-top: 10px; }
-        .btn-delete { background-color: #dc3545; }
-        .btn-cancel { background-color: #6c757d; margin-left: 10px; display: none; padding: 4px 8px; font-size: 12px; }
-        .btn-download { background-color: #007bff; margin-right: 5px; }
-        .storage-info { font-size: 13px; color: #666; margin-top: 10px; border-top: 1px solid #eee; padding-top: 10px; }
-        #status-area { margin-top: 10px; display: flex; align-items: center; }
-        #status { font-weight: bold; color: #d9534f; }
-        
-        /* New styling for the Selection state */
-        .sync-badge { background-color: #e9ecef; color: #495057; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-        .selected-glow { background-color: #fff9db !important; border-left: 4px solid #ffcc00; }
+        body {
+            font-family: Arial;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
 
-        .progress-container { width: 100%; background-color: #eee; border-radius: 4px; margin-top: 12px; display: none; }
-        .progress-bar { width: 0%; height: 12px; background-color: #28a745; border-radius: 4px; transition: width 0.1s; }
+        .container {
+            max-width: 600px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+
+        .section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 5px;
+            border: 1px solid #eee;
+        }
+
+        .file-list {
+            margin-top: 10px;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 8px 12px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            text-decoration: none;
+            font-size: 14px;
+            display: inline-block;
+        }
+
+        .btn-upload {
+            background-color: #28a745;
+            margin-top: 10px;
+        }
+
+        .btn-delete {
+            background-color: #dc3545;
+        }
+
+        .btn-cancel {
+            background-color: #6c757d;
+            margin-left: 10px;
+            display: none;
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
+        .btn-download {
+            background-color: #007bff;
+            margin-right: 5px;
+        }
+
+        .storage-info {
+            font-size: 13px;
+            color: #666;
+            margin-top: 10px;
+            border-top: 1px solid #eee;
+            padding-top: 10px;
+        }
+
+        #status-area {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+        }
+
+        #status {
+            font-weight: bold;
+            color: #d9534f;
+        }
+
+        /* New styling for the Selection state */
+        .sync-badge {
+            background-color: #e9ecef;
+            color: #495057;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .selected-glow {
+            background-color: #fff9db !important;
+            border-left: 4px solid #ffcc00;
+        }
+
+        .progress-container {
+            width: 100%;
+            background-color: #eee;
+            border-radius: 4px;
+            margin-top: 12px;
+            display: none;
+        }
+
+        .progress-bar {
+            width: 0%;
+            height: 12px;
+            background-color: #28a745;
+            border-radius: 4px;
+            transition: width 0.1s;
+        }
     </style>
 </head>
+
 <body>
 
 
 
-<div class="container">
-    <h2>Ship Audio Management</h2>
+    <div class="container">
+        <h2>Ship Audio Management</h2>
 
-    <div class="section">
-        <strong>Upload New Effect (.mp3 or .csv)</strong><br>
-        <input type="file" id="fileInput" accept=".mp3,.csv" style="margin-top:10px;">
-        <br>
-        <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
-        
-        <div class="progress-container" id="progCont">
-            <div class="progress-bar" id="progBar"></div>
+        <div class="section">
+            <strong>Upload New Effect (.mp3 or .csv)</strong><br>
+            <input type="file" id="fileInput" accept=".mp3,.csv" style="margin-top:10px;">
+            <br>
+            <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
+
+            <div class="progress-container" id="progCont">
+                <div class="progress-bar" id="progBar"></div>
+            </div>
+
+            <div id="status-area">
+                <span id="status"></span>
+                <button class="btn btn-cancel" id="cancelBtn" onclick="cancelUpload()">Cancel</button>
+            </div>
         </div>
-        
-        <div id="status-area">
-            <span id="status"></span>
-            <button class="btn btn-cancel" id="cancelBtn" onclick="cancelUpload()">Cancel</button>
+
+        <div class="file-list section">
+            <strong>Files on SD Card:</strong>
+            <div id="fileList">Scanning...</div>
+            <div class="storage-info" id="storage">Loading storage info...</div>
         </div>
+
+        <button class="btn btn-delete" style="width:100%; margin-top:10px;" onclick="deleteAll()">Delete All Files
+            (Format SD)</button>
     </div>
 
-    <div class="file-list section">
-        <strong>Files on SD Card:</strong>
-        <div id="fileList">Scanning...</div>
-        <div class="storage-info" id="storage">Loading storage info...</div>
+    <div class="control-group" style="margin-top: 20px; padding: 15px; border: 1px solid #444; border-radius: 8px;">
+        <label style="font-weight: bold; display: block; margin-bottom: 10px;">Master Volume</label>
+        <input type="range" id="volSlider" min="0" max="100" value="50" style="width: 80%; cursor: pointer;"
+            oninput="updateVolumeLabel(this.value)" onchange="sendVolume(this.value)">
+        <span id="volLabel" style="margin-left: 10px; font-family: monospace;">50%</span>
     </div>
 
-    <button class="btn btn-delete" style="width:100%; margin-top:10px;" onclick="deleteAll()">Delete All Files (Format SD)</button>
-</div>
 
-<script>
-    let currentXhr = null; 
-    let selectedProject = ""; // Stores the base name of the paired project
+    <script>
+        let currentXhr = null;
+        let selectedProject = ""; // Stores the base name of the paired project
 
-    function updateStatus(msg) {
-        document.getElementById('status').innerText = msg;
-    }
+        function updateStatus(msg) {
+            document.getElementById('status').innerText = msg;
+        }
 
-    async function fetchFiles() {
-        try {
-            const response = await fetch('/list');
-            const data = await response.json();
-            const listDiv = document.getElementById('fileList');
-            listDiv.innerHTML = '';
+        async function fetchFiles() {
+            try {
+                const response = await fetch('/list');
+                const data = await response.json();
+                const listDiv = document.getElementById('fileList');
+                listDiv.innerHTML = '';
 
-            // 1. Sort files into types
-            const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
-            const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+                // 1. Sort files into types
+                const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
+                const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
 
-            // 2. Build the list based on Audio files
-            audioFiles.forEach(file => {
-                const item = document.createElement('div');
-                const fullName = decodeURIComponent(file.name);
-                const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
-                
-                // Check for a matching CSV
-                const hasMatchingCsv = csvFiles.some(csv => 
-                    decodeURIComponent(csv.name).startsWith(baseName)
-                );
+                // 2. Build the list based on Audio files
+                audioFiles.forEach(file => {
+                    const item = document.createElement('div');
+                    const fullName = decodeURIComponent(file.name);
+                    const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
 
-                const isSelected = (selectedProject === baseName);
-                item.className = 'file-item' + (isSelected ? ' selected-glow' : '');
-                
-                const selectBtnStyle = isSelected ? "background-color: #ffcc00; color: black; font-weight:bold;" : "background-color: #6c757d;";
-                const selectBtnText = isSelected ? "SELECTED" : "Select CSV";
+                    // Check for a matching CSV
+                    const hasMatchingCsv = csvFiles.some(csv =>
+                        decodeURIComponent(csv.name).startsWith(baseName)
+                    );
 
-                item.innerHTML = `
+                    const isSelected = (selectedProject === baseName);
+                    item.className = 'file-item' + (isSelected ? ' selected-glow' : '');
+
+                    const selectBtnStyle = isSelected ? "background-color: #ffcc00; color: black; font-weight:bold;" : "background-color: #6c757d;";
+                    const selectBtnText = isSelected ? "SELECTED" : "Select CSV";
+
+                    item.innerHTML = `
                     <span>
                         <strong>${baseName}</strong><br>
                         <small style="color: #666;">${(file.size / 1024).toFixed(1)} KB</small>
@@ -108,162 +221,180 @@
                         <button class="btn btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
                     </div>
                 `;
-                listDiv.appendChild(item);
-            });
+                    listDiv.appendChild(item);
+                });
 
-            // 3. Show Orphanded CSVs (those without a matching MP3)
-            csvFiles.forEach(csv => {
-                const csvName = decodeURIComponent(csv.name);
-                const base = csvName.substring(0, csvName.lastIndexOf('.'));
-                const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
-                
-                if (!hasMp3) {
-                    const item = document.createElement('div');
-                    item.className = 'file-item';
-                    item.innerHTML = `
+                // 3. Show Orphanded CSVs (those without a matching MP3)
+                csvFiles.forEach(csv => {
+                    const csvName = decodeURIComponent(csv.name);
+                    const base = csvName.substring(0, csvName.lastIndexOf('.'));
+                    const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
+
+                    if (!hasMp3) {
+                        const item = document.createElement('div');
+                        item.className = 'file-item';
+                        item.innerHTML = `
                         <span style="color: #999;">${csvName} <small>(Script Only)</small></span>
                         <button class="btn btn-delete" onclick="deleteFile('${csv.name}')">Delete</button>
                     `;
-                    listDiv.appendChild(item);
-                }
-            });
+                        listDiv.appendChild(item);
+                    }
+                });
 
-            updateStorage();
-        } catch (e) {
-            document.getElementById('fileList').innerText = "Failed to load files.";
-        }
-    }
-
-    function selectProject(name) {
-        // Toggle selection: if clicked again, it deselects
-        if (selectedProject === name) {
-            selectedProject = "";
-        } else {
-            selectedProject = name;
-        }
-        fetchFiles(); // Re-render to show highlight
-    }
-
-async function playProject(name) {
-    const useSync = (selectedProject === name) ? "1" : "0";
-    updateStatus("Sending command...");
-
-    try {
-        const response = await fetch(`/play?project=${encodeURIComponent(name)}&sync=${useSync}`);
-        if (response.ok) {
-            updateStatus("Playing: " + name + (useSync === "1" ? " (Synchronized)" : ""));
-        } else {
-            updateStatus("Error: Server returned " + response.status);
-        }
-    } catch (err) {
-        updateStatus("Network error: Could not reach ship.");
-    }
-}
-
-    function uploadFile() {
-        const fileInput = document.getElementById('fileInput');
-        const progCont = document.getElementById('progCont');
-        const progBar = document.getElementById('progBar');
-        const cancelBtn = document.getElementById('cancelBtn');
-        const uploadBtn = document.getElementById('uploadBtn');
-        
-        if (fileInput.files.length === 0) {
-            updateStatus("Please select a file first.");
-            return;
-        }
-
-        const file = fileInput.files[0];
-
-        // --- NEW SAFETY CHECK START ---
-        // This allows only letters, numbers, underscores, and the dot before the extension.
-        // It specifically blocks spaces and the "%" character that causes the %20 trap.
-        const validPattern = /^[a-zA-Z0-9_.]+$/;
-        if (!validPattern.test(file.name)) {
-            alert("INVALID FILENAME DETECTED!\n\n" +
-                  "Current name: " + file.name + "\n\n" +
-                  "Please rename the file on your computer first.\n" +
-                  "Standard: Use only letters, numbers, and underscores (no spaces).");
-            fileInput.value = ""; // Reset the file picker
-            return;
-        }
-        // --- NEW SAFETY CHECK END ---
-        
-        currentXhr = new XMLHttpRequest();
-
-        progCont.style.display = 'block';
-        progBar.style.width = '0%';
-        progBar.style.backgroundColor = '#28a745';
-        cancelBtn.style.display = 'inline-block';
-        uploadBtn.disabled = true;
-        updateStatus("Preparing...");
-
-        currentXhr.upload.onprogress = function(event) {
-            if (event.lengthComputable) {
-                const percent = (event.loaded / event.total) * 100;
-                progBar.style.width = percent + '%';
-                updateStatus(`Uploading: ${Math.round(percent)}%`);
+                updateStorage();
+            } catch (e) {
+                document.getElementById('fileList').innerText = "Failed to load files.";
             }
-        };
+        }
 
-        currentXhr.onload = function() {
-            uploadBtn.disabled = false;
-            cancelBtn.style.display = 'none';
-            if (currentXhr.status === 200) {
-                updateStatus("Upload Successful!");
-                setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 3000);
-                fetchFiles();
+        function selectProject(name) {
+            // Toggle selection: if clicked again, it deselects
+            if (selectedProject === name) {
+                selectedProject = "";
             } else {
-                updateStatus("Upload Failed (" + currentXhr.status + ")");
-                progBar.style.backgroundColor = "#dc3545";
+                selectedProject = name;
             }
-        };
+            fetchFiles(); // Re-render to show highlight
+        }
 
-        currentXhr.onerror = function() {
-            uploadBtn.disabled = false;
-            cancelBtn.style.display = 'none';
-            updateStatus("Network Error.");
-            progBar.style.backgroundColor = "#dc3545";
-        };
+        async function playProject(name) {
+            const useSync = (selectedProject === name) ? "1" : "0";
+            updateStatus("Sending command...");
 
-        currentXhr.onabort = function() {
-            uploadBtn.disabled = false;
-            cancelBtn.style.display = 'none';
-            updateStatus("Upload Cancelled.");
-            progBar.style.backgroundColor = "#6c757d";
-            setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 2000);
-        };
+            try {
+                const response = await fetch(`/play?project=${encodeURIComponent(name)}&sync=${useSync}`);
+                if (response.ok) {
+                    updateStatus("Playing: " + name + (useSync === "1" ? " (Synchronized)" : ""));
+                } else {
+                    updateStatus("Error: Server returned " + response.status);
+                }
+            } catch (err) {
+                updateStatus("Network error: Could not reach ship.");
+            }
+        }
 
-        currentXhr.open("POST", `/upload?file=${encodeURIComponent(file.name)}`, true);
-        currentXhr.send(file);
-    }
+        function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const progCont = document.getElementById('progCont');
+            const progBar = document.getElementById('progBar');
+            const cancelBtn = document.getElementById('cancelBtn');
+            const uploadBtn = document.getElementById('uploadBtn');
 
-    function cancelUpload() {
-        if (currentXhr) currentXhr.abort();
-    }
+            if (fileInput.files.length === 0) {
+                updateStatus("Please select a file first.");
+                return;
+            }
 
-    async function deleteFile(name) {
-        if (!confirm("Delete " + decodeURIComponent(name) + "?")) return;
-        await fetch(`/delete?file=${name}`);
+            const file = fileInput.files[0];
+
+            // --- NEW SAFETY CHECK START ---
+            // This allows only letters, numbers, underscores, and the dot before the extension.
+            // It specifically blocks spaces and the "%" character that causes the %20 trap.
+            const validPattern = /^[a-zA-Z0-9_.]+$/;
+            if (!validPattern.test(file.name)) {
+                alert("INVALID FILENAME DETECTED!\n\n" +
+                    "Current name: " + file.name + "\n\n" +
+                    "Please rename the file on your computer first.\n" +
+                    "Standard: Use only letters, numbers, and underscores (no spaces).");
+                fileInput.value = ""; // Reset the file picker
+                return;
+            }
+            // --- NEW SAFETY CHECK END ---
+
+            currentXhr = new XMLHttpRequest();
+
+            progCont.style.display = 'block';
+            progBar.style.width = '0%';
+            progBar.style.backgroundColor = '#28a745';
+            cancelBtn.style.display = 'inline-block';
+            uploadBtn.disabled = true;
+            updateStatus("Preparing...");
+
+            currentXhr.upload.onprogress = function (event) {
+                if (event.lengthComputable) {
+                    const percent = (event.loaded / event.total) * 100;
+                    progBar.style.width = percent + '%';
+                    updateStatus(`Uploading: ${Math.round(percent)}%`);
+                }
+            };
+
+            currentXhr.onload = function () {
+                uploadBtn.disabled = false;
+                cancelBtn.style.display = 'none';
+                if (currentXhr.status === 200) {
+                    updateStatus("Upload Successful!");
+                    setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 3000);
+                    fetchFiles();
+                } else {
+                    updateStatus("Upload Failed (" + currentXhr.status + ")");
+                    progBar.style.backgroundColor = "#dc3545";
+                }
+            };
+
+            currentXhr.onerror = function () {
+                uploadBtn.disabled = false;
+                cancelBtn.style.display = 'none';
+                updateStatus("Network Error.");
+                progBar.style.backgroundColor = "#dc3545";
+            };
+
+            currentXhr.onabort = function () {
+                uploadBtn.disabled = false;
+                cancelBtn.style.display = 'none';
+                updateStatus("Upload Cancelled.");
+                progBar.style.backgroundColor = "#6c757d";
+                setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 2000);
+            };
+
+            currentXhr.open("POST", `/upload?file=${encodeURIComponent(file.name)}`, true);
+            currentXhr.send(file);
+        }
+
+        function cancelUpload() {
+            if (currentXhr) currentXhr.abort();
+        }
+
+        function updateVolumeLabel(val) {
+            document.getElementById('volLabel').innerText = val + '%';
+        }
+
+        // Sends the actual command to the ESP32
+        function sendVolume(val) {
+            console.log("Setting volume to: " + val + "%");
+
+            fetch(`/volume?val=${val}`)
+                .then(response => {
+                    if (!response.ok) {
+                        console.error("Volume update failed");
+                    }
+                })
+                .catch(err => console.error("Network error updating volume:", err));
+        }
+
+        async function deleteFile(name) {
+            if (!confirm("Delete " + decodeURIComponent(name) + "?")) return;
+            await fetch(`/delete?file=${name}`);
+            fetchFiles();
+        }
+
+        async function deleteAll() {
+            if (!confirm("Are you sure you want to wipe the SD card?")) return;
+            await fetch('/delete_all');
+            fetchFiles();
+        }
+
+        async function updateStorage() {
+            try {
+                const response = await fetch('/storage');
+                const data = await response.json();
+                document.getElementById('storage').innerText =
+                    `Storage: ${Math.round(data.free / 1024 / 1024)} MB free of ${Math.round(data.total / 1024 / 1024)} MB`;
+            } catch (e) { }
+        }
+
         fetchFiles();
-    }
-
-    async function deleteAll() {
-        if (!confirm("Are you sure you want to wipe the SD card?")) return;
-        await fetch('/delete_all');
-        fetchFiles();
-    }
-
-    async function updateStorage() {
-        try {
-            const response = await fetch('/storage');
-            const data = await response.json();
-            document.getElementById('storage').innerText =
-                `Storage: ${Math.round(data.free / 1024 / 1024)} MB free of ${Math.round(data.total / 1024 / 1024)} MB`;
-        } catch (e) {}
-    }
-
-    fetchFiles();
-</script>
+    </script>
 
 </body>
+
 </html>

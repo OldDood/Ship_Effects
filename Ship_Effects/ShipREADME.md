@@ -113,6 +113,58 @@ The system utilizes a dedicated decoder task to bridge the gap between compresse
 **Decoding:** Software-based MP3 decoding (libmad/minimp3) streaming to i2s_channel_write.
 
 **Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
+
+### 🔊 New Feature: Software-Based Volume Control (v1.3)
+Since the **MAX98357A** lacks an I2C control bus, this version implements a **High-Precision Digital Pre-Gain Stage** within the MP3 decoder loop.
+
+*   **Logic:** 16-bit PCM samples are scaled by a floating-point multiplier ($0.0$ to $1.0$) before being pushed to the I2S DMA buffer.
+*   **Safety:** Includes hard-clipping protection to prevent digital wrapping/distortion at high gain levels.
+*   **Web Integration:** A new `/volume?val=X` endpoint (where X is 0-100) allows real-time adjustment via the Web Portal slider.
+
+---
+
+### 🎼 MP3 Decoder & Sync Engine
+The system utilizes a dedicated decoder task to bridge the gap between compressed SD data and the I2S DMA buffers.
+
+**Decoding:** Software-based MP3 decoding (libmad/minimp3) streaming to `i2s_channel_write`.
+
+**Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
+
+**Volume Scaling:** Real-time gain adjustment applied to the raw PCM buffer post-decode, providing smooth volume transitions without hardware overhead.
+
+---
+
+### 🌐 Web Portal Endpoints (v1.3)
+The management interface now supports the following remote commands:
+
+| Endpoint | Method | Purpose |
+| :--- | :--- | :--- |
+| `/` | GET | Main control dashboard (ship_web.html). |
+| `/volume?val=n` | GET | Sets master volume (0-100%). |
+| `/play?project=x` | GET | Triggers a specific file and sync sequence. |
+| `/list` | GET | Returns JSON list of all files on SD card. |
+| `/upload` | POST | Uploads new MP3/CSV files with filename safety checks. |
+| `/storage` | GET | Reports total and free space on the FAT32 partition. |
+| `/solar` | GET | Returns current Sun/Night status for the Modbury area. |
+
+---
+
+### 🧪 Audio Execution Modes
+#### 2. High-Fidelity Playback: `play_wav_file` / `MP3`
+*   **Software Gain:** Now defaults to **50%** on boot to prevent high-decibel transients during system startup.
+*   **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
+
+---
+
+### 🚀 Updated Execution Flow (`app_main`)
+1.  **NVS Init:** Prepares flash for WiFi credentials.
+2.  **System Event Group:** Creates `s_system_event_group`.
+3.  **Peripheral Warm-up:** Initializes SD Card and Amplifier.
+4.  **Digital Bus:** Starts I2S Clocks and attaches the driver.
+5.  **Network & Time:** Connects WiFi and synchronizes ACST time.
+6.  **Web Portal:** Launches interface, including the **Volume Control Handler**.
+7.  **Audio Task Launch:** Pinned to **Core 1**, initializing the `master_volume` variable for the decoder loop.
+
 ---
 ## 🛰️ Serial bus to WLED controller
 
