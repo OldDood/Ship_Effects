@@ -99,7 +99,6 @@
             color: #d9534f;
         }
 
-        /* New styling for the Selection state */
         .sync-badge {
             background-color: #e9ecef;
             color: #495057;
@@ -129,12 +128,19 @@
             border-radius: 4px;
             transition: width 0.1s;
         }
+
+        .control-group {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fafafa;
+            border-radius: 5px;
+            border: 1px solid #eee;
+            text-align: center;
+        }
     </style>
 </head>
 
 <body>
-
-
 
     <div class="container">
         <h2>Ship Audio Management</h2>
@@ -163,19 +169,50 @@
 
         <button class="btn btn-delete" style="width:100%; margin-top:10px;" onclick="deleteAll()">Delete All Files
             (Format SD)</button>
-    </div>
 
-    <div class="control-group" style="margin-top: 20px; padding: 15px; border: 1px solid #444; border-radius: 8px;">
-        <label style="font-weight: bold; display: block; margin-bottom: 10px;">Master Volume</label>
-        <input type="range" id="volSlider" min="0" max="100" value="50" style="width: 80%; cursor: pointer;"
-            oninput="updateVolumeLabel(this.value)" onchange="sendVolume(this.value)">
-        <span id="volLabel" style="margin-left: 10px; font-family: monospace;">50%</span>
-    </div>
+        <!-- MASTER CONTROLS SECTION -->
+        <div class="control-group" style="margin-top: 20px; border: 2px solid #007bff;">
+            <strong style="display: block; margin-bottom: 15px;">Master Audio Engine</strong>
+            
+            <div style="display: flex; justify-content: center; gap: 10px; margin-bottom: 15px;">
+                <button class="btn" style="background-color: #28a745; flex: 1; font-weight: bold;" onclick="setAudioState('start')">SOUND ON</button>
+                <button class="btn" style="background-color: #dc3545; flex: 1; font-weight: bold;" onclick="setAudioState('stop')">SOUND OFF</button>
+            </div>
+            
+            <div id="engine-status" style="font-size: 12px; margin-bottom: 20px; color: #666; font-style: italic;">
+                System Status: Ready
+            </div>
 
+            <hr style="border: 0; border-top: 1px solid #ddd; margin-bottom: 15px;">
+
+            <label style="font-weight: bold; display: block; margin-bottom: 10px;">Master Volume</label>
+            <input type="range" id="volSlider" min="0" max="100" value="50" style="width: 80%; cursor: pointer;"
+                oninput="updateVolumeLabel(this.value)" onchange="sendVolume(this.value)">
+            <span id="volLabel" style="margin-left: 10px; font-family: monospace;">50%</span>
+        </div>
+    </div>
 
     <script>
         let currentXhr = null;
-        let selectedProject = ""; // Stores the base name of the paired project
+        let selectedProject = ""; 
+
+        // New function to handle the Start/Stop software latch
+        async function setAudioState(state) {
+            const engineLabel = document.getElementById('engine-status');
+            engineLabel.innerText = "Processing command...";
+            
+            try {
+                const response = await fetch('/' + state);
+                if (response.ok) {
+                    engineLabel.innerText = "System: " + (state === 'start' ? "SOUND ON" : "SOUND OFF");
+                    engineLabel.style.color = (state === 'start' ? "#28a745" : "#dc3545");
+                } else {
+                    engineLabel.innerText = "Error: Server rejected command";
+                }
+            } catch (err) {
+                engineLabel.innerText = "Network Error: Ship unreachable";
+            }
+        }
 
         function updateStatus(msg) {
             document.getElementById('status').innerText = msg;
@@ -188,17 +225,14 @@
                 const listDiv = document.getElementById('fileList');
                 listDiv.innerHTML = '';
 
-                // 1. Sort files into types
                 const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
                 const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
 
-                // 2. Build the list based on Audio files
                 audioFiles.forEach(file => {
                     const item = document.createElement('div');
                     const fullName = decodeURIComponent(file.name);
                     const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
 
-                    // Check for a matching CSV
                     const hasMatchingCsv = csvFiles.some(csv =>
                         decodeURIComponent(csv.name).startsWith(baseName)
                     );
@@ -224,7 +258,6 @@
                     listDiv.appendChild(item);
                 });
 
-                // 3. Show Orphanded CSVs (those without a matching MP3)
                 csvFiles.forEach(csv => {
                     const csvName = decodeURIComponent(csv.name);
                     const base = csvName.substring(0, csvName.lastIndexOf('.'));
@@ -248,13 +281,12 @@
         }
 
         function selectProject(name) {
-            // Toggle selection: if clicked again, it deselects
             if (selectedProject === name) {
                 selectedProject = "";
             } else {
                 selectedProject = name;
             }
-            fetchFiles(); // Re-render to show highlight
+            fetchFiles(); 
         }
 
         async function playProject(name) {
@@ -286,23 +318,14 @@
             }
 
             const file = fileInput.files[0];
-
-            // --- NEW SAFETY CHECK START ---
-            // This allows only letters, numbers, underscores, and the dot before the extension.
-            // It specifically blocks spaces and the "%" character that causes the %20 trap.
             const validPattern = /^[a-zA-Z0-9_.]+$/;
             if (!validPattern.test(file.name)) {
-                alert("INVALID FILENAME DETECTED!\n\n" +
-                    "Current name: " + file.name + "\n\n" +
-                    "Please rename the file on your computer first.\n" +
-                    "Standard: Use only letters, numbers, and underscores (no spaces).");
-                fileInput.value = ""; // Reset the file picker
+                alert("INVALID FILENAME DETECTED!\n\nPlease rename the file on your computer first.");
+                fileInput.value = ""; 
                 return;
             }
-            // --- NEW SAFETY CHECK END ---
 
             currentXhr = new XMLHttpRequest();
-
             progCont.style.display = 'block';
             progBar.style.width = '0%';
             progBar.style.backgroundColor = '#28a745';
@@ -331,21 +354,6 @@
                 }
             };
 
-            currentXhr.onerror = function () {
-                uploadBtn.disabled = false;
-                cancelBtn.style.display = 'none';
-                updateStatus("Network Error.");
-                progBar.style.backgroundColor = "#dc3545";
-            };
-
-            currentXhr.onabort = function () {
-                uploadBtn.disabled = false;
-                cancelBtn.style.display = 'none';
-                updateStatus("Upload Cancelled.");
-                progBar.style.backgroundColor = "#6c757d";
-                setTimeout(() => { progCont.style.display = 'none'; updateStatus(""); }, 2000);
-            };
-
             currentXhr.open("POST", `/upload?file=${encodeURIComponent(file.name)}`, true);
             currentXhr.send(file);
         }
@@ -358,15 +366,10 @@
             document.getElementById('volLabel').innerText = val + '%';
         }
 
-        // Sends the actual command to the ESP32
         function sendVolume(val) {
-            console.log("Setting volume to: " + val + "%");
-
             fetch(`/volume?val=${val}`)
                 .then(response => {
-                    if (!response.ok) {
-                        console.error("Volume update failed");
-                    }
+                    if (!response.ok) console.error("Volume update failed");
                 })
                 .catch(err => console.error("Network error updating volume:", err));
         }
@@ -394,7 +397,5 @@
 
         fetchFiles();
     </script>
-
 </body>
-
 </html>

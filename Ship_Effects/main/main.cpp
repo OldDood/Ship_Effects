@@ -81,6 +81,9 @@ marker_timeline_t ship_timeline;
 
 static const char *TAG = "ShipEffects";
 
+volatile bool AUDIO_ENABLED= false; // Global flag to control audio playback. Set to true when music should play, false to stop immediately.
+uint8_t current_volume = 50; // Default volume percentage (0-100)
+
  // External function located in main.cpp
 extern "C" void set_master_volume(int vol_percent);
 // Global volume (0.0 to 1.0). 
@@ -96,7 +99,6 @@ static EventGroupHandle_t s_system_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define SNTP_SYNCED_BIT BIT1
 
-#define AUTOPLAY_SWITCH_PIN (gpio_num_t)14 // GPIO pin connected to the physical switch for autoplay control
 
 void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
@@ -334,18 +336,6 @@ esp_err_t un_init_sd_card()
     return ret;
 }
 
-
-// Initiate the GPIO pin for the autoplay switch with pull-up resistor
-void init_hardware()
-{
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << AUTOPLAY_SWITCH_PIN),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE, // Use internal resistor
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE};
-    gpio_config(&io_conf);
-}
 
 void trigger_autoplay_from_sd()
 {
@@ -638,6 +628,7 @@ void init_wled_serial() {
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
+        .flags = 0
     };
 
     // 2. Install the driver (Port 1, RX buffer 2048, TX buffer 0, no event queue)
@@ -720,7 +711,7 @@ void play_mp3_file(const char *path)
     {
     // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
 // Inside your while(true) decoding loop
-if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 0) {
+if (AUDIO_ENABLED == 0) {
     ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
     break; // Stops the music instantly
 }
@@ -956,6 +947,58 @@ void load_timeline_from_csv(const char *file_path)
         fclose(f);
     }
 }
+#include "nvs.h"
+
+// Save the volume to flash memory
+extern "C" void save_volume_to_nvs(uint8_t vol) {
+    nvs_handle_t my_handle;
+    // Open the namespace you initialized in app_main
+    esp_err_t err = nvs_open("ship_prefs", NVS_READWRITE, &my_handle);
+    if (err == ESP_OK) {
+        nvs_set_u8(my_handle, "audio_vol", vol);
+        nvs_commit(my_handle); 
+        nvs_close(my_handle);
+        ESP_LOGI("NVS", "Volume %d latched to Flash", vol);
+    }
+}
+
+// Load the volume from flash memory
+uint8_t load_volume_from_nvs() {
+    nvs_handle_t my_handle;
+    uint8_t vol = 50; // Default fallback value
+    esp_err_t err = nvs_open("ship_prefs", NVS_READONLY, &my_handle);
+    if (err == ESP_OK) {
+        nvs_get_u8(my_handle, "audio_vol", &vol);
+        nvs_close(my_handle);
+        ESP_LOGI("NVS", "Loaded volume from NVRAM: %d", vol);
+    }
+    return vol;
+}
+
+
+void save_play_state_to_nvs(bool state) {
+    nvs_handle_t my_handle;
+    esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err == ESP_OK) {
+        nvs_set_u8(my_handle, "play_state", state ? 1 : 0);
+        nvs_commit(my_handle);
+        nvs_close(my_handle);
+    }
+}
+
+bool load_play_state_from_nvs() {
+    nvs_handle_t my_handle;
+    uint8_t play_state = 0; // Default to 0 (Stopped) if not found
+    
+    esp_err_t err = nvs_open("storage", NVS_READONLY, &my_handle);
+    if (err == ESP_OK) {
+        // Read the value. If the key "play_state" doesn't exist, play_state remains 0.
+        nvs_get_u8(my_handle, "play_state", &play_state);
+        nvs_close(my_handle);
+    }
+    
+    return (play_state == 1);
+}
 
 // 8. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
@@ -971,6 +1014,8 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
+    
+
     s_system_event_group = xEventGroupCreate(); // Create the system event group to track WiFi and SNTP readiness
 
     // 2. NOW START SERVICES
@@ -980,6 +1025,15 @@ extern "C" void app_main()
     init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
     init_wled_serial();
+
+   
+    current_volume = load_volume_from_nvs();// Load the saved volume level from flash memory
+    set_master_volume(current_volume);// Apply the loaded volume to the audio system immediately
+
+    // 2. Load the saved state from your new function
+    AUDIO_ENABLED = load_play_state_from_nvs();
+    
+    ESP_LOGI(TAG, "Ship Audio Engine is: %s", AUDIO_ENABLED ? "ARMED" : "DISARMED");
 
     // Launch the playback task with 16KB of stack
     playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));
@@ -1006,7 +1060,7 @@ extern "C" void app_main()
         // Everything above is now initialized.
         // We wait 1 second to let the Audio Task reach its 'while(1)' loop.
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (gpio_get_level(AUTOPLAY_SWITCH_PIN) == 1)
+        if (AUDIO_ENABLED == 1)
         {
             trigger_autoplay_from_sd();
         }
@@ -1025,8 +1079,7 @@ extern "C" void app_main()
         ESP_LOGI("TIME", "Cold boot or time not yet synced.");
     }
     uint8_t loopback_buf[128]; // Buffer for incoming serial data
-    // Initialize to a "dummy" value so the first check on boot always triggers a log
-    int last_switch_state = -1;
+
     // --- MAIN LOOP ---
     while (1)
     {
@@ -1039,20 +1092,8 @@ extern "C" void app_main()
         ESP_LOGI("DEBUG", "Serial Loopback HEARD: %s", (char*)loopback_buf);
     }
 
-int current_switch_state = gpio_get_level(AUTOPLAY_SWITCH_PIN);
-
-    // --- LOGGING LOGIC: Trigger on boot (-1) or when state changes ---
-    if (current_switch_state != last_switch_state) {
-        if (current_switch_state == 1) {
-            ESP_LOGI("AUTO", "Switch flipped to ON (Armed)");
-        } else {
-            ESP_LOGW("AUTO", "Switch flipped to OFF (Disarmed)");
-        }
-        last_switch_state = current_switch_state; // Update the memory
-    }
-
     // --- EXECUTION LOGIC ---
-    if (current_switch_state == 1 && !is_audio_playing) {
+    if (AUDIO_ENABLED == 1 && !is_audio_playing) {
         is_audio_playing = true; // LOCK the gate immediately
         trigger_autoplay_from_sd(); 
     }

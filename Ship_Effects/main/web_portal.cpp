@@ -9,8 +9,11 @@
 #include "esp_vfs_fat.h"
 #include <time.h>
 
+// This allows web_portal to call the NVS save function located in main.cpp
+extern "C" void save_volume_to_nvs(uint8_t vol);
+
 extern const uint8_t ship_web_html_start[] asm("_binary_ship_web_html_start");
-extern const uint8_t ship_web_html_end[]   asm("_binary_ship_web_html_end");
+extern const uint8_t ship_web_html_end[] asm("_binary_ship_web_html_end");
 
 static const char *TAG = "WebPortal";
 httpd_handle_t server = NULL;
@@ -27,6 +30,28 @@ typedef struct
     bool sync_enabled;
 } playback_cmd_t;
 
+// Top of web_portal.cpp
+extern volatile bool AUDIO_ENABLED;
+extern void save_play_state_to_nvs(bool state);
+
+esp_err_t play_start_handler(httpd_req_t *req)
+{
+    AUDIO_ENABLED = true;
+    save_play_state_to_nvs(true);
+    ESP_LOGI("WEB", "Audio Relay: CLOSED (On)");
+    httpd_resp_sendstr(req, "Audio Enabled");
+    return ESP_OK;
+}
+
+esp_err_t play_stop_handler(httpd_req_t *req)
+{
+    AUDIO_ENABLED = false;
+    save_play_state_to_nvs(false);
+    ESP_LOGW("WEB", "Audio Relay: OPEN (Off)");
+    httpd_resp_sendstr(req, "Audio Disabled");
+    return ESP_OK;
+}
+
 // This allows web_portal to call the function located in main.cpp
 extern "C" void trigger_project_play(playback_cmd_t *cmd);
 
@@ -41,7 +66,7 @@ esp_err_t index_get_handler(httpd_req_t *req)
     // 3. Keep your diagnostic logs to verify the update
     ESP_LOGW("DEBUG", "===> ROOT HANDLER TRIGGERED <===");
     ESP_LOGW("DEBUG", "Address of data: %p | Size: %zu bytes", (void *)ship_web_html_start, len);
-    
+
     // This will tell you immediately if you're looking at the new code
     // Look for your new <input type="range"> or functions in the logs
     ESP_LOGI(TAG, "First 20 bytes: %.20s", data);
@@ -327,14 +352,24 @@ esp_err_t volume_get_handler(httpd_req_t *req)
 {
     char query[256];
     char vol_str[10];
+    static int last_saved_vol = -1; // Local latch to prevent redundant flash writes
 
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
     {
         if (httpd_query_key_value(query, "val", vol_str, sizeof(vol_str)) == ESP_OK)
         {
             int vol = atoi(vol_str);
+
+            // 1. Apply the volume to the hardware immediately for responsiveness
             set_master_volume(vol);
-            
+
+            // 2. Save to NVRAM only if the value has changed
+            if (vol != last_saved_vol)
+            {
+                save_volume_to_nvs((uint8_t)vol);
+                last_saved_vol = vol;
+            }
+
             char resp[32];
             snprintf(resp, sizeof(resp), "Volume set to %d%%", vol);
             httpd_resp_sendstr(req, resp);
@@ -349,7 +384,7 @@ esp_err_t volume_get_handler(httpd_req_t *req)
 void start_web_portal()
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12; // Increase the limit so it can hold all 9 of your URIs
+    config.max_uri_handlers = 15; //
     config.stack_size = 10240;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
@@ -388,6 +423,12 @@ void start_web_portal()
 
         httpd_uri_t volume_uri = {.uri = "/volume", .method = HTTP_GET, .handler = volume_get_handler, .user_ctx = NULL};
         httpd_register_uri_handler(server, &volume_uri);
+
+        httpd_uri_t start_uri = {.uri = "/start", .method = HTTP_GET, .handler = play_start_handler};
+        httpd_register_uri_handler(server, &start_uri);
+
+        httpd_uri_t stop_uri = {.uri = "/stop", .method = HTTP_GET, .handler = play_stop_handler};
+        httpd_register_uri_handler(server, &stop_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
 

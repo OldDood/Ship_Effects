@@ -1,6 +1,8 @@
 ### 🚢 ShipEffects S3 v1.3: Audio & Logic Engine
 
-A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. This version marks the successful functionality test of a dedicated **I2S Digital Audio**
+A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
+This version has had a volume control and Sound On/Off fuction added.
+The new settings are stored in NVRam to ensure that they are kept between power up/down cycles.
 
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
@@ -10,7 +12,7 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 **WLED Controller: This project requires WLED v0.15.0-b7 "Full" (or later). Standard or "gcc" builds often lack the Serial JSON API required to trigger ship effects.**
 
-**Communication: Legacy 4-bit parallel digital outputs have been deprecated and removed. Control is now handled via a 2-wire Serial JSON Bridge.**
+**Communication: Control to WLED controller is handled via a 2-wire Serial UART JSON Bridge.**
 
 ## 📦 Component List (BOM)
 
