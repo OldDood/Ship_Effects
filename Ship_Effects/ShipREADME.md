@@ -1,8 +1,9 @@
-### 🚢 ShipEffects S3 v1.3: Audio & Logic Engine
+### 🚢 ShipEffects S3 v1.4: Audio & Logic Engine with OTA
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
-This version has had a volume control and Sound On/Off fuction added.
-The new settings are stored in NVRam to ensure that they are kept between power up/down cycles.
+
+## This version has had OTA added! ##
+**The firmware can now be updated via the web interface**
 
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
@@ -58,6 +59,7 @@ The new settings are stored in NVRam to ensure that they are kept between power 
 * **WLED Interface:** The 4-bit bus provides 15 unique trigger IDs via serial interface to WLED(plus 0 for idle).
 * **Safety Logic:** All WLED output pins are initialized as push-pull outputs to ensure clean logic transitions for the receiver.
 * **Audio Sync:** GPIOs 10-13 are updated via the marker parser during I2S playback.
+* **OTA:** Over The Air updating of software via the web browser interface.
 
 ## ⚙️ Project Configuration (`menuconfig`)
 The project now utilizes `Kconfig.projbuild` for rapid field adjustments without code changes:

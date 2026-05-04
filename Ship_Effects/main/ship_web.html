@@ -173,12 +173,14 @@
         <!-- MASTER CONTROLS SECTION -->
         <div class="control-group" style="margin-top: 20px; border: 2px solid #007bff;">
             <strong style="display: block; margin-bottom: 15px;">Master Audio Engine</strong>
-            
+
             <div style="display: flex; justify-content: center; gap: 10px; margin-bottom: 15px;">
-                <button class="btn" style="background-color: #28a745; flex: 1; font-weight: bold;" onclick="setAudioState('start')">SOUND ON</button>
-                <button class="btn" style="background-color: #dc3545; flex: 1; font-weight: bold;" onclick="setAudioState('stop')">SOUND OFF</button>
+                <button class="btn" style="background-color: #28a745; flex: 1; font-weight: bold;"
+                    onclick="setAudioState('start')">SOUND ON</button>
+                <button class="btn" style="background-color: #dc3545; flex: 1; font-weight: bold;"
+                    onclick="setAudioState('stop')">SOUND OFF</button>
             </div>
-            
+
             <div id="engine-status" style="font-size: 12px; margin-bottom: 20px; color: #666; font-style: italic;">
                 System Status: Ready
             </div>
@@ -190,17 +192,31 @@
                 oninput="updateVolumeLabel(this.value)" onchange="sendVolume(this.value)">
             <span id="volLabel" style="margin-left: 10px; font-family: monospace;">50%</span>
         </div>
+        <div class="card">
+            <h2>Ship Maintenance</h2>
+            <p>Upload a new firmware binary to update the San Juan.</p>
+            <!-- We remove the form action/method so JS can handle it cleanly -->
+            <div id="upload_form">
+                <input type="file" name="update" accept=".bin" id="file_input">
+                <br><br>
+                <button class="btn" style="background-color: #007bff; width: 100%;" onclick="startFirmwareUpdate()">
+                    Flash New Firmware
+                </button>
+            </div>
+            <div id="ota_status" style="margin-top:10px; color:#d35400; font-weight:bold;"></div>
+        </div>
+
     </div>
 
     <script>
         let currentXhr = null;
-        let selectedProject = ""; 
+        let selectedProject = "";
 
         // New function to handle the Start/Stop software latch
         async function setAudioState(state) {
             const engineLabel = document.getElementById('engine-status');
             engineLabel.innerText = "Processing command...";
-            
+
             try {
                 const response = await fetch('/' + state);
                 if (response.ok) {
@@ -286,7 +302,7 @@
             } else {
                 selectedProject = name;
             }
-            fetchFiles(); 
+            fetchFiles();
         }
 
         async function playProject(name) {
@@ -321,7 +337,7 @@
             const validPattern = /^[a-zA-Z0-9_.]+$/;
             if (!validPattern.test(file.name)) {
                 alert("INVALID FILENAME DETECTED!\n\nPlease rename the file on your computer first.");
-                fileInput.value = ""; 
+                fileInput.value = "";
                 return;
             }
 
@@ -386,7 +402,7 @@
             fetchFiles();
         }
 
-        async function updateStorage() {
+ async function updateStorage() {
             try {
                 const response = await fetch('/storage');
                 const data = await response.json();
@@ -395,7 +411,45 @@
             } catch (e) { }
         }
 
+        async function startFirmwareUpdate() {
+            const fileInput = document.getElementById('file_input');
+            const statusDiv = document.getElementById('ota_status');
+
+            if (fileInput.files.length === 0) {
+                alert("Please select a .bin file first.");
+                return;
+            }
+
+            if (!confirm("The San Juan will stop all audio and reboot. Proceed?")) return;
+
+            const file = fileInput.files[0];
+            statusDiv.innerText = "Stopping audio and uploading firmware...";
+
+            try {
+                const response = await fetch('/update', {
+                    method: 'POST',
+                    body: file, 
+                    headers: {
+                        'Content-Type': 'application/octet-stream'
+                    }
+                });
+
+                if (response.ok) {
+                    statusDiv.style.color = "#28a745";
+                    statusDiv.innerText = "Update Successful! Ship is rebooting...";
+                } else {
+                    statusDiv.style.color = "#dc3545";
+                    statusDiv.innerText = "Update Failed: " + response.statusText;
+                }
+            } catch (err) {
+                statusDiv.style.color = "#dc3545";
+                statusDiv.innerText = "Connection lost. This is normal as the ship reboots.";
+            }
+        }
+
+        // Initialize
         fetchFiles();
+
     </script>
 </body>
 </html>

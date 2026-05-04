@@ -8,10 +8,24 @@
 #include "esp_netif.h"
 #include "esp_vfs_fat.h"
 #include <time.h>
+#include "esp_ota_ops.h"    // Required for OTA functions
+#include "esp_system.h"
 
 // This allows web_portal to call the NVS save function located in main.cpp
 extern "C" void save_volume_to_nvs(uint8_t vol);
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Forward declaration of the OTA handler from ota.c
+esp_err_t ota_update_handler(httpd_req_t *req);
+
+#ifdef __cplusplus
+}
+#endif
+
+extern "C" void play_stop(void); // Forward declaration of the function to stop audio playback, defined in main.cpp
 extern const uint8_t ship_web_html_start[] asm("_binary_ship_web_html_start");
 extern const uint8_t ship_web_html_end[] asm("_binary_ship_web_html_end");
 
@@ -379,6 +393,91 @@ esp_err_t volume_get_handler(httpd_req_t *req)
     return httpd_resp_send_404(req);
 }
 
+esp_err_t ota_update_handler(httpd_req_t *req) {
+    esp_ota_handle_t update_handle = 0;
+    const esp_partition_t *update_partition = NULL;
+    esp_err_t err;
+
+    // 1. Initial State Check & HW Suspension
+    // Like your volume_get_handler, we ensure the system is in the right state first
+    play_stop(); 
+    ESP_LOGI(TAG, "Suspending audio for San Juan firmware update...");
+
+    // 2. Partition Selection
+    // Dynamically selects ota_0 or ota_1 based on your partitions.csv
+    update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        ESP_LOGE(TAG, "Target OTA partition not found");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Partition Error");
+        return ESP_FAIL;
+    }
+
+    // 3. Initialize Flash Operation
+    err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OTA Begin failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA Init Failed");
+        return ESP_FAIL;
+    }
+
+   // 4. Data Streaming (Standard Buffer Handling)
+    char buf[1024];
+    int remaining = req->content_len;
+    int received;
+    bool first_chunk = true; // Add this line
+
+    while (remaining > 0) {
+        if ((received = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)))) <= 0) {
+            if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE(TAG, "Socket Error during upload");
+            return ESP_FAIL;
+        }
+
+        int offset = 0;
+        if (first_chunk) {
+            // If we see a hyphen (0x2d) instead of the magic byte (0xE9), 
+            // the browser sent a multipart header. We must find the real start.
+            if ((uint8_t)buf[0] == 0x2d) {
+                ESP_LOGW(TAG, "Detected multipart header. Searching for binary start...");
+                for (int i = 0; i < received - 1; i++) {
+                    if ((uint8_t)buf[i] == 0xE9) {
+                        offset = i;
+                        received -= i;
+                        ESP_LOGI(TAG, "Found magic byte 0xE9 at offset %d", offset);
+                        break;
+                    }
+                }
+            }
+            first_chunk = false;
+        }
+           
+        err = esp_ota_write(update_handle, (const void *)(buf + offset), received);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Write failed: %s", esp_err_to_name(err));
+            return ESP_FAIL;
+        }
+        remaining -= (received + offset); // Account for the skipped bytes
+    }
+
+    // 5. Validation and Boot Partition Swap
+    // Ensures the SHA-256 is correct before marking as the boot partition
+    if (esp_ota_end(update_handle) != ESP_OK || esp_ota_set_boot_partition(update_partition) != ESP_OK) {
+        ESP_LOGE(TAG, "Finalization failed");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Flash Commit Failed");
+        return ESP_FAIL;
+    }
+
+    // 6. Response and Clean Reboot
+    ESP_LOGI(TAG, "Update Success. Rebooting to %s", update_partition->label);
+    httpd_resp_sendstr(req, "<html><body><h1>Update Success</h1><p>San Juan is rebooting...</p></body></html>");
+    
+    // Brief delay to ensure the browser receives the 'Success' message
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+
+    return ESP_OK;
+}
+
 // --- Server Control ---
 
 void start_web_portal()
@@ -429,6 +528,10 @@ void start_web_portal()
 
         httpd_uri_t stop_uri = {.uri = "/stop", .method = HTTP_GET, .handler = play_stop_handler};
         httpd_register_uri_handler(server, &stop_uri);
+
+        // OTA Update Handler Registration
+httpd_uri_t ota_uri = {.uri      = "/update", .method   = HTTP_POST,.handler  = ota_update_handler,.user_ctx = NULL};
+httpd_register_uri_handler(server, &ota_uri);
 
         ESP_LOGI(TAG, "Server started with all URIs initialized.");
 

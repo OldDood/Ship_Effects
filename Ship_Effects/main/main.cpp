@@ -103,6 +103,7 @@ static EventGroupHandle_t s_system_event_group;
 void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
+
 /**
  * @brief Prototype for the WLED Serial Bridge
  * Sends a JSON preset command based on the timeline marker_id.
@@ -999,6 +1000,28 @@ bool load_play_state_from_nvs() {
     
     return (play_state == 1);
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void play_stop(void) {
+    // 1. Log the intent
+    ESP_LOGW("AUDIO", "San Juan: Emergency Audio Stop for OTA...");
+
+    // 2. Flip the software latch to stop the audio task from processing
+    AUDIO_ENABLED = false;
+
+    // 3. Optional: Add a small delay to let the last I2S buffer clear
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
+    // Future home for hardware-specific shutdown:
+    i2s_channel_disable(tx_handle); 
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 // 8. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
