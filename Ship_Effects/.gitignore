@@ -1,6 +1,5 @@
 # ESP-IDF Build Folders
 build/
-sdkconfig
 sdkconfig.old
 
 # VS Code Metadata

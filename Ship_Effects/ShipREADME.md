@@ -2,8 +2,11 @@
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
 
-## This version has had OTA added! ##
+## This version has had OTA refined! ##
 **The firmware can now be updated via the web interface**
+Fixed a number of issues with the memory configuration to free up memory-
+sdkconfig (menuconfig) modified to use custom partitions.csv and various IRAM settings disabled
+partitions.csv modified to enable better utilisation of the available memory
 
 ---
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
