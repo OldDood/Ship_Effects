@@ -658,16 +658,12 @@ void send_wled_command(uint8_t marker_id)
         return;
     }
 
-    char json_cmd[64];
+    char json_cmd[32]; // Buffer to hold the JSON command string
 /* 
-       THE MODIFICATION:
-       "ps": marker_id -> Loads the preset
-       "nl": {"on":false} -> Force-kills any running Sunrise/Nightlight fades
-       "v": true -> Optional: Forces WLED to send a state response back (useful for debugging)
+    "ps": marker_id -> Loads the preset
+    example JSON command to set preset 5: {"ps":5}
     */
-    int len = snprintf(json_cmd, sizeof(json_cmd), 
-                       "{\"ps\":%d,\"nl\":{\"on\":false},\"v\":true}\n", 
-                       marker_id);
+int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
 
     // Write to UART1 (Assuming UART1 is your WLED bridge)
     uart_write_bytes(UART_NUM_1, json_cmd, len);
