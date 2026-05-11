@@ -47,7 +47,17 @@ See ShipREADME.md for project overview and details.
 
 #include <dirent.h>
 
-#define MAX_MARKERS 16 // We are limiting to 16 for now as per your plan
+/*
+The SemaphoreHandle_t type is a pointer to an opaque structure that represents a semaphore in FreeRTOS.
+Each marker in the timeline will have a "triggered" flag to ensure it only fires once per song.
+To safely read and update this flag from both the audio task and the main loop,
+we will use a mutex (which is a type of semaphore) to protect access to the timeline data structure.
+ This ensures that when one task is checking or updating the marker states, the other task cannot interfere, preventing race
+conditions and ensuring thread safety.
+The markers contains a trigger time (in ms), a marker ID (1-16), and a "triggered" flag.
+ The timeline struct contains an array of these markers, a count of how many are used, and a mutex for thread safety.
+*/
+#define MAX_MARKERS 100 // We are limiting to 100, but you can adjust this as needed. Just remember it uses RAM, so more markers = more memory usage.
 
 // --- Begin defining the data structures for the Audio Markers and Timeline
 // 1. Define what a single Marker looks like
@@ -81,14 +91,14 @@ marker_timeline_t ship_timeline;
 
 static const char *TAG = "ShipEffects";
 
-volatile bool AUDIO_ENABLED= false; // Global flag to control audio playback. Set to true when music should play, false to stop immediately.
-uint8_t current_volume = 50; // Default volume percentage (0-100)
+volatile bool AUDIO_ENABLED = false; // Global flag to control audio playback. Set to true when music should play, false to stop immediately.
+uint8_t current_volume = 50;         // Default volume percentage (0-100)
 
- // External function located in main.cpp
+// External function located in main.cpp
 extern "C" void set_master_volume(int vol_percent);
-// Global volume (0.0 to 1.0). 
+// Global volume (0.0 to 1.0).
 // Using a float for smooth multiplication in the audio loop.
-static float master_volume = 0.5f; 
+static float master_volume = 0.5f;
 
 // WiFi Macros from your menuconfig
 #define WIFI_SSID CONFIG_WIFI_SSID
@@ -99,21 +109,20 @@ static EventGroupHandle_t s_system_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define SNTP_SYNCED_BIT BIT1
 
-
 void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
-
+void start_wifi_logging(); // Forward declaration of the function to start sending logs over WiFi to the PC
 /**
  * @brief Prototype for the WLED Serial Bridge
  * Sends a JSON preset command based on the timeline marker_id.
  */
 void send_wled_command(uint8_t marker_id); // Forward declaration of the function to send a command to WLED based on the marker ID
-void init_wled_serial(void); // Forward declaration of the function to initialize the UART for WLED communication
+void init_wled_serial(void);               // Forward declaration of the function to initialize the UART for WLED communication
 
-// Volatile tells the compiler that this variable can change 
+// Volatile tells the compiler that this variable can change
 // unexpectedly (since it's shared between two different CPU cores).
-volatile bool is_audio_playing = false;// This flag will be set to true when music starts playing, and false when it stops. Both the audio task and the main loop can read this variable to know if music is currently playing or not.
+volatile bool is_audio_playing = false; // This flag will be set to true when music starts playing, and false when it stops. Both the audio task and the main loop can read this variable to know if music is currently playing or not.
 
 // This queue will hold the filename of the project we want to play
 static QueueHandle_t playback_queue = NULL;
@@ -175,9 +184,41 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI("WIFI", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        //start_wifi_logging();// Function to start sending logs over WiFi to the PC
         // SIGNAL: WiFi is ready!
         xEventGroupSetBits(s_system_event_group, WIFI_CONNECTED_BIT);
     }
+}
+
+#include "lwip/sockets.h"
+
+// Define your PC's IP and the port you will listen on
+#define PC_LOG_IP "10.0.0.43"  // Replace with your laptop's IP
+#define PC_LOG_PORT 5555
+
+static int log_socket = -1;
+static struct sockaddr_in pc_addr;
+
+static int wifi_log_vprintf(const char *fmt, va_list args) {
+    // 1. Send to USB (This never freezes)
+    int result = vprintf(fmt, args);
+
+    // 2. The Guard: Prevent recursive calling
+    static bool is_logging = false;
+    if (is_logging) return result; 
+    
+    is_logging = true; // Lock
+
+    if (log_socket >= 0) {
+        char buf[256];
+        int len = vsnprintf(buf, sizeof(buf), fmt, args);
+        if (len > 0) {
+            sendto(log_socket, buf, len, 0, (struct sockaddr *)&pc_addr, sizeof(pc_addr));
+        }
+    }
+
+    is_logging = false; // Unlock
+    return result;
 }
 
 // 2. WiFi Init
@@ -336,7 +377,6 @@ esp_err_t un_init_sd_card()
     }
     return ret;
 }
-
 
 void trigger_autoplay_from_sd()
 {
@@ -549,33 +589,31 @@ void play_wav_file(const char *path, int num_loops)
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(44100),
         .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
-        .gpio_cfg = { 
-            .mclk = I2S_GPIO_UNUSED, 
-            .bclk = (gpio_num_t)7, 
-            .ws = (gpio_num_t)15, 
-            .dout = (gpio_num_t)6, 
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = (gpio_num_t)7,
+            .ws = (gpio_num_t)15,
+            .dout = (gpio_num_t)6,
             .din = I2S_GPIO_UNUSED,
-            .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false }
-        }
-    };
+            .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false}}};
 
-   
     i2s_channel_reconfig_std_clock(tx_handle, &std_cfg.clk_cfg);
     i2s_channel_reconfig_std_slot(tx_handle, &std_cfg.slot_cfg);
 
     for (int i = 1; i <= num_loops; i++)
     {
         FILE *f = fopen(path, "rb");
-        if (!f) return;
+        if (!f)
+            return;
 
         // Use the REAPER-confirmed data start
-        fseek(f, 690, SEEK_SET); 
+        fseek(f, 690, SEEK_SET);
 
         const int chunk_size = 1024;
         int16_t *mono_buffer = (int16_t *)malloc(chunk_size);
         // We need a second buffer to hold the "Stereo" version
-        int16_t *stereo_buffer = (int16_t *)malloc(chunk_size * 2); 
-        
+        int16_t *stereo_buffer = (int16_t *)malloc(chunk_size * 2);
+
         size_t bytes_read;
         size_t bytes_written;
 
@@ -584,10 +622,11 @@ void play_wav_file(const char *path, int num_loops)
         while ((bytes_read = fread(mono_buffer, 1, chunk_size, f)) > 0)
         {
             int samples = bytes_read / sizeof(int16_t);
-            for (int s = 0; s < samples; s++) {
+            for (int s = 0; s < samples; s++)
+            {
                 // Copy the same sample to both Left and Right channels
-                stereo_buffer[s*2] = mono_buffer[s];     // Left
-                stereo_buffer[s*2 + 1] = mono_buffer[s]; // Right
+                stereo_buffer[s * 2] = mono_buffer[s];     // Left
+                stereo_buffer[s * 2 + 1] = mono_buffer[s]; // Right
             }
             // Write twice the data (because it's now stereo)
             i2s_channel_write(tx_handle, stereo_buffer, bytes_read * 2, &bytes_written, portMAX_DELAY);
@@ -598,10 +637,10 @@ void play_wav_file(const char *path, int num_loops)
         fclose(f);
         i2s_channel_disable(tx_handle);
 
-        if (i < num_loops) vTaskDelay(pdMS_TO_TICKS(1000));
+        if (i < num_loops)
+            vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
-
 
 void update_i2s_sample_rate(int rate)
 {
@@ -620,7 +659,8 @@ void update_i2s_sample_rate(int rate)
     i2s_channel_enable(tx_handle);
 }
 
-void init_wled_serial() {
+void init_wled_serial()
+{
     // 1. Configure the UART parameters
     const uart_config_t uart_config = {
         .baud_rate = 115200,
@@ -629,12 +669,12 @@ void init_wled_serial() {
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
-        .flags = 0
-    };
+        .flags = 0};
 
     // 2. Install the driver (Port 1, RX buffer 2048, TX buffer 0, no event queue)
     esp_err_t err = uart_driver_install(UART_NUM_1, 2048, 0, 0, NULL, 0);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         ESP_LOGE("WLED", "Failed to install UART driver!");
         return;
     }
@@ -645,29 +685,30 @@ void init_wled_serial() {
     // 4. Set the pins (TX: GPIO 17, RX: GPIO 18)
     // You can change 17/18 to whatever pins you have free on the S3
     uart_set_pin(UART_NUM_1, 17, 18, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    
+
     ESP_LOGI("WLED", "Serial Bridge Initialized on UART1 (TX:17, RX:18)");
 }
 
 void send_wled_command(uint8_t marker_id)
 {
-    // Safety check: 0 is usually 'off' or 'idle' in WLED, 
+    // Safety check: 0 is usually 'off' or 'idle' in WLED,
     // so we only send if the ID is within our expected range.
-    if (marker_id < 1 || marker_id > 16) {
+    if (marker_id < 1 || marker_id > 16)
+    {
         ESP_LOGW("WLED", "Invalid marker_id: %d (Skipping)", marker_id);
         return;
     }
 
     char json_cmd[32]; // Buffer to hold the JSON command string
-/* 
-    "ps": marker_id -> Loads the preset
-    example JSON command to set preset 5: {"ps":5}
-    */
-int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
+    /*
+        "ps": marker_id -> Loads the preset
+        example JSON command to set preset 5: {"ps":5}
+        */
+    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
 
     // Write to UART1 (Assuming UART1 is your WLED bridge)
     uart_write_bytes(UART_NUM_1, json_cmd, len);
-    
+
     ESP_LOGI("WLED", "Marker %d -> WLED JSON sent: %s", marker_id, json_cmd);
 }
 
@@ -712,12 +753,13 @@ void play_mp3_file(const char *path)
 
     while (true)
     {
-    // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
-// Inside your while(true) decoding loop
-if (AUDIO_ENABLED == 0) {
-    ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
-    break; // Stops the music instantly
-}
+        // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
+        // Inside your while(true) decoding loop
+        if (AUDIO_ENABLED == 0)
+        {
+            ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
+            break; // Stops the music instantly
+        }
         size_t n = fread(input_buf + bytes_left, 1, read_size - bytes_left, f);
         bytes_left += n;
 
@@ -739,11 +781,14 @@ if (AUDIO_ENABLED == 0) {
             int total_samples = samples * info.channels;
             float current_gain = master_volume; // Local copy to prevent changes mid-buffer
 
-            for (int i = 0; i < total_samples; i++) {
+            for (int i = 0; i < total_samples; i++)
+            {
                 // Multiply sample by gain and clip to 16-bit boundaries
                 int32_t val = (int32_t)(pcm_buf[i] * current_gain);
-                if (val > 32767) val = 32767;
-                if (val < -32768) val = -32768;
+                if (val > 32767)
+                    val = 32767;
+                if (val < -32768)
+                    val = -32768;
                 pcm_buf[i] = (int16_t)val;
             }
 
@@ -776,7 +821,7 @@ if (AUDIO_ENABLED == 0) {
                                  ship_timeline.markers[i].trigger_ms,
                                  current_ms);
 
-                        send_wled_command(ship_timeline.markers[i].marker_id);// The new Serial link;
+                        send_wled_command(ship_timeline.markers[i].marker_id); // The new Serial link;
                     }
                 }
                 xSemaphoreGive(ship_timeline.mutex);
@@ -800,17 +845,17 @@ if (AUDIO_ENABLED == 0) {
     ESP_LOGI(TAG, "Playback Finished.");
 }
 
+extern "C" void set_master_volume(int vol_percent)
+{
+    if (vol_percent < 0)
+        vol_percent = 0;
+    if (vol_percent > 100)
+        vol_percent = 100;
 
-
-extern "C" void set_master_volume(int vol_percent) {
-    if (vol_percent < 0) vol_percent = 0;
-    if (vol_percent > 100) vol_percent = 100;
-    
     // Convert 0-100 to 0.0-1.0
     master_volume = vol_percent / 100.0f;
     ESP_LOGI("AUDIO", "Master Volume set to: %d%%", vol_percent);
 }
-
 
 // 1. Update the task to actually DO the work
 void audio_playback_task(void *pvParameters)
@@ -832,6 +877,8 @@ void audio_playback_task(void *pvParameters)
     if ((bits & (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT)) == (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT))
     {
         ESP_LOGI("SHIP", "System ready with Network Time."); // Both WiFi and SNTP are ready, so we have accurate time for sunrise/sunset calculations and photo timestamps.
+    start_wifi_logging(); // Function to start sending logs over WiFi to the PC
+    ESP_LOGI("SHIP", "Wireless Logging redirected to PC.");
     }
     else
     {
@@ -874,6 +921,10 @@ void audio_playback_task(void *pvParameters)
         playback_cmd_t cmd;
         char full_path[128];
 
+        // --- BEFORE THE LOOP (Runs once on boot) ---
+        ESP_LOGI("AUDIO_TASK", "Waiting 5 seconds for WLED processor to stabilize...");
+        vTaskDelay(pdMS_TO_TICKS(5000)); // Non-blocking delay (let other tasks run)
+
         while (1)
         {
             if (xQueueReceive(playback_queue, &cmd, portMAX_DELAY))
@@ -890,7 +941,7 @@ void audio_playback_task(void *pvParameters)
                 load_timeline_from_csv(csv_path);
 
                 // 4. Start the playback
-                play_mp3_file(full_path);                
+                play_mp3_file(full_path);
             }
         }
         break; // This line is never actually reached in Case 3.
@@ -941,6 +992,7 @@ void load_timeline_from_csv(const char *file_path)
                 ship_timeline.markers[marker_index].marker_id = (uint8_t)id_num;
                 ship_timeline.markers[marker_index].triggered = false;
 
+
                 ESP_LOGI("CSV", "Marker %d -> Clock Time: %ld ms", id_num, total_ms);
                 marker_index++;
             }
@@ -953,24 +1005,28 @@ void load_timeline_from_csv(const char *file_path)
 #include "nvs.h"
 
 // Save the volume to flash memory
-extern "C" void save_volume_to_nvs(uint8_t vol) {
+extern "C" void save_volume_to_nvs(uint8_t vol)
+{
     nvs_handle_t my_handle;
     // Open the namespace you initialized in app_main
     esp_err_t err = nvs_open("ship_prefs", NVS_READWRITE, &my_handle);
-    if (err == ESP_OK) {
+    if (err == ESP_OK)
+    {
         nvs_set_u8(my_handle, "audio_vol", vol);
-        nvs_commit(my_handle); 
+        nvs_commit(my_handle);
         nvs_close(my_handle);
         ESP_LOGI("NVS", "Volume %d latched to Flash", vol);
     }
 }
 
 // Load the volume from flash memory
-uint8_t load_volume_from_nvs() {
+uint8_t load_volume_from_nvs()
+{
     nvs_handle_t my_handle;
     uint8_t vol = 50; // Default fallback value
     esp_err_t err = nvs_open("ship_prefs", NVS_READONLY, &my_handle);
-    if (err == ESP_OK) {
+    if (err == ESP_OK)
+    {
         nvs_get_u8(my_handle, "audio_vol", &vol);
         nvs_close(my_handle);
         ESP_LOGI("NVS", "Loaded volume from NVRAM: %d", vol);
@@ -978,52 +1034,73 @@ uint8_t load_volume_from_nvs() {
     return vol;
 }
 
-
-void save_play_state_to_nvs(bool state) {
+void save_play_state_to_nvs(bool state)
+{
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
-    if (err == ESP_OK) {
+    if (err == ESP_OK)
+    {
         nvs_set_u8(my_handle, "play_state", state ? 1 : 0);
         nvs_commit(my_handle);
         nvs_close(my_handle);
     }
 }
 
-bool load_play_state_from_nvs() {
+bool load_play_state_from_nvs()
+{
     nvs_handle_t my_handle;
     uint8_t play_state = 0; // Default to 0 (Stopped) if not found
-    
+
     esp_err_t err = nvs_open("storage", NVS_READONLY, &my_handle);
-    if (err == ESP_OK) {
+    if (err == ESP_OK)
+    {
         // Read the value. If the key "play_state" doesn't exist, play_state remains 0.
         nvs_get_u8(my_handle, "play_state", &play_state);
         nvs_close(my_handle);
     }
-    
+
     return (play_state == 1);
 }
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-void play_stop(void) {
-    // 1. Log the intent
-    ESP_LOGW("AUDIO", "San Juan: Emergency Audio Stop for OTA...");
+    void play_stop(void)
+    {
+        // 1. Log the intent
+        ESP_LOGW("AUDIO", "San Juan: Emergency Audio Stop for OTA...");
 
-    // 2. Flip the software latch to stop the audio task from processing
-    AUDIO_ENABLED = false;
+        // 2. Flip the software latch to stop the audio task from processing
+        AUDIO_ENABLED = false;
 
-    // 3. Optional: Add a small delay to let the last I2S buffer clear
-    vTaskDelay(pdMS_TO_TICKS(50));
-    
-    // Future home for hardware-specific shutdown:
-    i2s_channel_disable(tx_handle); 
-}
+        // 3. Optional: Add a small delay to let the last I2S buffer clear
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // Future home for hardware-specific shutdown:
+        i2s_channel_disable(tx_handle);
+    }
 
 #ifdef __cplusplus
 }
 #endif
+
+// Function to initialize the socket and hook the logger
+void start_wifi_logging() {
+    log_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (log_socket < 0) return;
+
+    memset(&pc_addr, 0, sizeof(pc_addr));
+    pc_addr.sin_addr.s_addr = inet_addr(PC_LOG_IP);
+    pc_addr.sin_family = AF_INET;
+    pc_addr.sin_port = htons(PC_LOG_PORT);
+
+    // This is the magic command that redirects the ESP-IDF logging system
+    esp_log_set_vprintf(wifi_log_vprintf);
+    
+    ESP_LOGI("SYS", "Wireless Logging Hooked to %s:%d", PC_LOG_IP, PC_LOG_PORT);
+}
 
 // 8. MAIN APPLICATION ENTRY POINT
 // MAIN ENTRY
@@ -1039,8 +1116,6 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
-    
-
     s_system_event_group = xEventGroupCreate(); // Create the system event group to track WiFi and SNTP readiness
 
     // 2. NOW START SERVICES
@@ -1051,13 +1126,12 @@ extern "C" void app_main()
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
     init_wled_serial();
 
-   
-    current_volume = load_volume_from_nvs();// Load the saved volume level from flash memory
-    set_master_volume(current_volume);// Apply the loaded volume to the audio system immediately
+    current_volume = load_volume_from_nvs(); // Load the saved volume level from flash memory
+    set_master_volume(current_volume);       // Apply the loaded volume to the audio system immediately
 
     // 2. Load the saved state from your new function
     AUDIO_ENABLED = load_play_state_from_nvs();
-    
+
     ESP_LOGI(TAG, "Ship Audio Engine is: %s", AUDIO_ENABLED ? "ARMED" : "DISARMED");
 
     // Launch the playback task with 16KB of stack
@@ -1081,6 +1155,7 @@ extern "C" void app_main()
         // because the Audio Task will do it dynamically.
         ESP_LOGI("INIT", "Timeline Mutex created successfully.");
 
+        
         // --- THE GOLDEN MOMENT ---
         // Everything above is now initialized.
         // We wait 1 second to let the Audio Task reach its 'while(1)' loop.
@@ -1106,22 +1181,25 @@ extern "C" void app_main()
     uint8_t loopback_buf[128]; // Buffer for incoming serial data
 
     // --- MAIN LOOP ---
-    while (1)
+while (1)
     {
-
         // --- 1. THE LOOPBACK CHECK ---
-    // Look at UART_NUM_1 to see if we heard our own TX
-    int len = uart_read_bytes(UART_NUM_1, loopback_buf, sizeof(loopback_buf) - 1, 20 / portTICK_PERIOD_MS);
-    if (len > 0) {
-        loopback_buf[len] = '\0'; // Null-terminate
-        ESP_LOGI("DEBUG", "Serial Loopback HEARD: %s", (char*)loopback_buf);
-    }
+        // We still read the bytes to clear the buffer so it doesn't get backed up,
+        // but we REMOVE the ESP_LOGI to prevent the wireless logging feedback loop.
+        int len = uart_read_bytes(UART_NUM_1, loopback_buf, sizeof(loopback_buf) - 1, 20 / portTICK_PERIOD_MS);
+        if (len > 0)
+        {
+            loopback_buf[len] = '\0'; 
+            // ESP_LOGI removed from here to stop the system freeze.
+        }
 
-    // --- EXECUTION LOGIC ---
-    if (AUDIO_ENABLED == 1 && !is_audio_playing) {
-        is_audio_playing = true; // LOCK the gate immediately
-        trigger_autoplay_from_sd(); 
-    }
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Check every second
+        // --- EXECUTION LOGIC ---
+        if (AUDIO_ENABLED == 1 && !is_audio_playing)
+        {
+            is_audio_playing = true; 
+            trigger_autoplay_from_sd();
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(1000)); 
     }
 }

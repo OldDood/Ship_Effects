@@ -2,20 +2,40 @@
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
 
-## This version has had OTA refined! ##
-**The firmware can now be updated via the web interface**
-Reverted to only sending marker commands as per the following - int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
-All transitions will be implemented in WLED preset interface.
+### 📡 Latest Feature: Wireless Logging (UDP)
+**✨ Remote Debugging: You can now monitor marker timing precision and playback status via the WiFi without a USB connection!**
 
----
+**The Wireless Logging Gatekeeper is a stability-focused logging architecture designed to provide real-time system diagnostics over Wi-Fi without impacting critical boot-time network handshakes.**
+
+**What it is**
+Unlike standard serial logging, this system redirects ESP_LOG output to a remote IP address via UDP. To maintain high availability for the Web Portal and SNTP services, the logging engine uses a Gated Execution strategy: it remains dormant until the network stack confirms a successful Time Sync (SNTP).
+
+**How to Use It**
+To monitor the Ship's internal state wirelessly (e.g., marker triggers, audio state, or sensor data):
+
+Prepare the Listener: Ensure your workstation (PC/Laptop) is on the same network and set to a static IP (default: 10.0.0.43).
+
+Open a UDP Client: Use **Packet Sender** or **netcat** to listen on Port 5555.
+
+**Boot Sequence:**
+
+0–2s: System initializes hardware (SD, I2S) and connects to Wi-Fi. (Output is USB-only during this phase).
+
+~2s: Upon successful SNTP sync, the "Gate" opens.
+
+Active: You will see [SYS] Time Synced! Starting Wireless Logging... in your UDP client.
+
+
+**Technical Implementation**
+The logging is managed within the audio_playback_task (Core 1). It uses xEventGroupWaitBits to monitor the SNTP_SYNCED_BIT. If a network connection cannot be established within 10 seconds, the gatekeeper automatically keeps the logging engine disabled to preserve system resources for local playback.
+
+----------------------------------------------------------------------------------------------------------
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
 **This version is fully functional and tested**
 
 ## Critical Integration Note:
 
 **WLED Controller: This project requires WLED v0.15.0-b7 "Full" (or later). Standard or "gcc" builds often lack the Serial JSON API required to trigger ship effects.**
-
-**Communication: Control to WLED controller is handled via a 2-wire Serial UART JSON Bridge.**
 
 ## 📦 Component List (BOM)
 
@@ -53,8 +73,6 @@ All transitions will be implemented in WLED preset interface.
 | **AMP GAIN** | `5` | **Gain.** Measured at 3.165V (**12dB** standard floor). |
 | **UART_NUM_1 TX** | `17` | T**X serial pin to WLED Controller** |
 | **UART_NUM_1 RX** | `18` | **RX serial pin from WLED Controller**|
-| **AUTOPLAY SW** | `14` | **Master Toggle.** Internal Pull-up enabled. |
-
 ---
 
 ### Integration Notes:
@@ -113,21 +131,6 @@ Streams audio from the SD card:
 * **Clean-Up:** Calls `i2s_channel_disable()` during intervals to ensure zero-hiss silence.
 * **Stability Fix:** Task is now pinned to **Core 1** to avoid Core 0 Watchdog Timeouts during WiFi activity.
 
-## 🎼 MP3 Decoder & Sync Engine
-The system utilizes a dedicated decoder task to bridge the gap between compressed SD data and the I2S DMA buffers.
-
-**Decoding:** Software-based MP3 decoding (libmad/minimp3) streaming to i2s_channel_write.
-
-**Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
-
-### 🔊 New Feature: Software-Based Volume Control (v1.3)
-Since the **MAX98357A** lacks an I2C control bus, this version implements a **High-Precision Digital Pre-Gain Stage** within the MP3 decoder loop.
-
-*   **Logic:** 16-bit PCM samples are scaled by a floating-point multiplier ($0.0$ to $1.0$) before being pushed to the I2S DMA buffer.
-*   **Safety:** Includes hard-clipping protection to prevent digital wrapping/distortion at high gain levels.
-*   **Web Integration:** A new `/volume?val=X` endpoint (where X is 0-100) allows real-time adjustment via the Web Portal slider.
-
----
 
 ### 🎼 MP3 Decoder & Sync Engine
 The system utilizes a dedicated decoder task to bridge the gap between compressed SD data and the I2S DMA buffers.
@@ -137,7 +140,11 @@ The system utilizes a dedicated decoder task to bridge the gap between compresse
 **Buffer Management:** Implements a 4KB ring buffer to prevent "under-run" stutters during SD card latency spikes.
 
 **Volume Scaling:** Real-time gain adjustment applied to the raw PCM buffer post-decode, providing smooth volume transitions without hardware overhead.
+Since the **MAX98357A** lacks an I2C control bus, this version implements a **High-Precision Digital Pre-Gain Stage** within the MP3 decoder loop.
 
+*   **Logic:** 16-bit PCM samples are scaled by a floating-point multiplier ($0.0$ to $1.0$) before being pushed to the I2S DMA buffer.
+*   **Safety:** Includes hard-clipping protection to prevent digital wrapping/distortion at high gain levels.
+*   **Web Integration:** A  `/volume?val=X` endpoint (where X is 0-100) allows real-time adjustment via the Web Portal slider.
 ---
 
 ### 🌐 Web Portal Endpoints (v1.3)
@@ -201,10 +208,6 @@ Format: JSON-encapsulated commands.Operational Logic: The S3 Master Engine parse
 {"ps": 1}
 **Field Definition:**
 **ps (Preset): The ID of the preset to activate. This corresponds to preset ID1 in the WLED web interface.**
-
-## 🕹️ Physical On and off switch on GPIO14
-**"Master Override" to enable or disable the automatic play of the .MP3 listed in autoplay.txt on the located on theSD card.**
-example text - i2S_Test - will play I2S_Test.mp3 located on the SD Card
 
 
 ## ☀️ Background Solar Engine
