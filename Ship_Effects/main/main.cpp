@@ -94,13 +94,21 @@ static const char *TAG = "ShipEffects";
 volatile bool AUDIO_ENABLED = false; // Global flag to control audio playback. Set to true when music should play, false to stop immediately.
 uint8_t current_volume = 50;         // Default volume percentage (0-100)
 
+// Storage for 32 presets. Index 0 is ignored, 1-32 map to WLED IDs.
+uint8_t DefaultIDBrightness[33] = {0}; // This array will hold the default brightness for each preset ID, which we will discover on boot. This allows us to restore the brightness after a preset change, ensuring consistent visual effects regardless of the WLED preset's internal settings.
+
+// Forward declaration so the compiler knows the function exists before it's called
+void wled_discover_presets(void); // This function will query WLED for the brightness of each preset ID (1-32) and store it in the DefaultIDBrightness array. This allows us to restore the brightness after triggering a preset, ensuring consistent visual effects regardless of the WLED preset's internal settings.
+
 // External function located in main.cpp
 extern "C" void set_master_volume(int vol_percent);
 // Global volume (0.0 to 1.0).
 // Using a float for smooth multiplication in the audio loop.
 static float master_volume = 0.5f;
 
+bool wled_initialised = false; // Global or static flag to track if WLED has been initialized. This prevents us from trying to send commands before the UART is ready.
 // WiFi Macros from your menuconfig
+
 #define WIFI_SSID CONFIG_WIFI_SSID
 #define WIFI_PASS CONFIG_WIFI_PASS
 
@@ -112,7 +120,7 @@ static EventGroupHandle_t s_system_event_group;
 void load_timeline_from_csv(const char *file_path); // Forward declaration of the function to load the timeline from a CSV file
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
-void start_wifi_logging(); // Forward declaration of the function to start sending logs over WiFi to the PC
+void start_wifi_logging();                          // Forward declaration of the function to start sending logs over WiFi to the PC
 /**
  * @brief Prototype for the WLED Serial Bridge
  * Sends a JSON preset command based on the timeline marker_id.
@@ -184,8 +192,8 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
     {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI("WIFI", "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        //start_wifi_logging();// Function to start sending logs over WiFi to the PC
-        // SIGNAL: WiFi is ready!
+        // start_wifi_logging();// Function to start sending logs over WiFi to the PC
+        //  SIGNAL: WiFi is ready!
         xEventGroupSetBits(s_system_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -193,26 +201,30 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
 #include "lwip/sockets.h"
 
 // Define your PC's IP and the port you will listen on
-#define PC_LOG_IP "10.0.0.43"  // Replace with your laptop's IP
+#define PC_LOG_IP "10.0.0.43" // Replace with your laptop's IP
 #define PC_LOG_PORT 5555
 
 static int log_socket = -1;
 static struct sockaddr_in pc_addr;
 
-static int wifi_log_vprintf(const char *fmt, va_list args) {
+static int wifi_log_vprintf(const char *fmt, va_list args)
+{
     // 1. Send to USB (This never freezes)
     int result = vprintf(fmt, args);
 
     // 2. The Guard: Prevent recursive calling
     static bool is_logging = false;
-    if (is_logging) return result; 
-    
+    if (is_logging)
+        return result;
+
     is_logging = true; // Lock
 
-    if (log_socket >= 0) {
+    if (log_socket >= 0)
+    {
         char buf[256];
         int len = vsnprintf(buf, sizeof(buf), fmt, args);
-        if (len > 0) {
+        if (len > 0)
+        {
             sendto(log_socket, buf, len, 0, (struct sockaddr *)&pc_addr, sizeof(pc_addr));
         }
     }
@@ -877,8 +889,8 @@ void audio_playback_task(void *pvParameters)
     if ((bits & (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT)) == (WIFI_CONNECTED_BIT | SNTP_SYNCED_BIT))
     {
         ESP_LOGI("SHIP", "System ready with Network Time."); // Both WiFi and SNTP are ready, so we have accurate time for sunrise/sunset calculations and photo timestamps.
-    start_wifi_logging(); // Function to start sending logs over WiFi to the PC
-    ESP_LOGI("SHIP", "Wireless Logging redirected to PC.");
+        start_wifi_logging();                                // Function to start sending logs over WiFi to the PC
+        ESP_LOGI("SHIP", "Wireless Logging redirected to PC.");
     }
     else
     {
@@ -921,9 +933,51 @@ void audio_playback_task(void *pvParameters)
         playback_cmd_t cmd;
         char full_path[128];
 
-        // --- BEFORE THE LOOP (Runs once on boot) ---
-        ESP_LOGI("AUDIO_TASK", "Waiting 5 seconds for WLED processor to stabilize...");
-        vTaskDelay(pdMS_TO_TICKS(5000)); // Non-blocking delay (let other tasks run)
+        // --- WLED HANDSHAKE WITH 10-SECOND TIMEOUT ---
+        // Before we enter the main loop, we want to ensure WLED is responsive. This is crucial for synchronization.
+        int retry_count = 0;
+        const int max_retries = 10; // 10 attempts (10 seconds total)
+
+        ESP_LOGI("WLED", "Synchronizing with WLED...");
+
+        while (!wled_initialised && retry_count < max_retries)
+        {
+            // 1. Send the Ping
+            const char *ping = "{\"v\":true,\"bri\":true}\n";
+            uart_write_bytes(UART_NUM_1, ping, strlen(ping));
+
+            // 2. Wait 1 second
+            vTaskDelay(pdMS_TO_TICKS(1000));
+
+            // 3. Check for response
+            uint8_t rx_buf[128];
+            int len = uart_read_bytes(UART_NUM_1, rx_buf, sizeof(rx_buf) - 1, 100 / portTICK_PERIOD_MS);
+
+            if (len > 0)
+            {
+                rx_buf[len] = '\0';
+                // Broaden the search: Look for version, info, or even just the brightness key
+                if (strstr((char *)rx_buf, "ver") ||
+                    strstr((char *)rx_buf, "vid") ||
+                    strstr((char *)rx_buf, "bri"))
+                {
+                    wled_initialised = true;
+                    ESP_LOGI("WLED", "Handshake successful! Response detected.");
+                    wled_discover_presets(); // Kick off the preset discovery immediately after confirming WLED is alive. This will populate our preset default brightness mapping before any tracks start playing.
+                }
+            }
+
+            if (!wled_initialised)
+            {
+                retry_count++;
+                ESP_LOGW("WLED", "Waiting... (%d/%d)", retry_count, max_retries);
+            }
+        }
+
+        if (!wled_initialised)
+        {
+            ESP_LOGE("WLED", "WLED failed to respond. Proceeding with Audio ONLY.");
+        }
 
         while (1)
         {
@@ -991,7 +1045,6 @@ void load_timeline_from_csv(const char *file_path)
                 ship_timeline.markers[marker_index].trigger_ms = total_ms;
                 ship_timeline.markers[marker_index].marker_id = (uint8_t)id_num;
                 ship_timeline.markers[marker_index].triggered = false;
-
 
                 ESP_LOGI("CSV", "Marker %d -> Clock Time: %ld ms", id_num, total_ms);
                 marker_index++;
@@ -1087,9 +1140,11 @@ extern "C"
 #endif
 
 // Function to initialize the socket and hook the logger
-void start_wifi_logging() {
+void start_wifi_logging()
+{
     log_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (log_socket < 0) return;
+    if (log_socket < 0)
+        return;
 
     memset(&pc_addr, 0, sizeof(pc_addr));
     pc_addr.sin_addr.s_addr = inet_addr(PC_LOG_IP);
@@ -1098,8 +1153,87 @@ void start_wifi_logging() {
 
     // This is the magic command that redirects the ESP-IDF logging system
     esp_log_set_vprintf(wifi_log_vprintf);
-    
+
     ESP_LOGI("SYS", "Wireless Logging Hooked to %s:%d", PC_LOG_IP, PC_LOG_PORT);
+}
+
+/**
+ * @brief Requests all presets from WLED and maps their default brightness
+ * to the DefaultIDBrightness array.
+ */
+void wled_discover_presets()
+{
+    ESP_LOGI("WLED", "Starting High-Speed Verified Discovery...");
+    memset(DefaultIDBrightness, 0, sizeof(DefaultIDBrightness));
+
+    char *rx_buf = (char *)malloc(2048);
+    if (!rx_buf) return;
+
+    int max_ids = 16;
+
+    for (int i = 1; i <= max_ids; i++)
+    {
+        uart_flush_input(UART_NUM_1);
+
+        char get_cmd[64];
+        snprintf(get_cmd, sizeof(get_cmd), "{\"ps\":%d,\"v\":true}\n", i);
+        uart_write_bytes(UART_NUM_1, get_cmd, strlen(get_cmd));
+
+        int len = 0;
+        int retry_wait = 0;
+        bool match_found = false;
+
+        while (retry_wait < 20) 
+        {
+            int available = 0;
+            uart_get_buffered_data_len(UART_NUM_1, (size_t*)&available);
+            
+            if (available > 200) { 
+                len = uart_read_bytes(UART_NUM_1, (uint8_t *)rx_buf, 2047, pdMS_TO_TICKS(300));
+                if (len > 0) {
+                    rx_buf[len] = '\0';
+                    
+                    char id_pattern[32];
+                    snprintf(id_pattern, sizeof(id_pattern), "\"ps\":%d", i);
+
+                    if (strstr(rx_buf, id_pattern)) 
+                    {
+                        char *bri_ptr = strstr(rx_buf, "\"bri\":");
+                        if (bri_ptr) {
+                            DefaultIDBrightness[i] = (uint8_t)atoi(bri_ptr + 6);
+                            match_found = true;
+                            break; 
+                        }
+                    }
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+            retry_wait++;
+        }
+
+        if (match_found)
+        {
+            // Build the exact array string format: [43,100,5,0...]
+            char array_view[128] = "";
+            char bit[12];
+            for (int k = 1; k <= max_ids; k++) {
+                // Formatting to match your request: value then comma, no extra spaces
+                snprintf(bit, sizeof(bit), "%d%s", DefaultIDBrightness[k], (k == max_ids) ? "" : ",");
+                strcat(array_view, bit);
+            }
+
+            // The specific log format you requested
+            ESP_LOGI("WLED", "Matched ID %02d: Bri %d | Array: [%s]", i, DefaultIDBrightness[i], array_view);
+        }
+        else 
+        {
+            // Silently retry - warnings removed as per your request
+            i--; 
+        }
+    }
+
+    ESP_LOGI("WLED", "Discovery Complete.");
+    free(rx_buf);
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -1155,7 +1289,6 @@ extern "C" void app_main()
         // because the Audio Task will do it dynamically.
         ESP_LOGI("INIT", "Timeline Mutex created successfully.");
 
-        
         // --- THE GOLDEN MOMENT ---
         // Everything above is now initialized.
         // We wait 1 second to let the Audio Task reach its 'while(1)' loop.
@@ -1181,7 +1314,7 @@ extern "C" void app_main()
     uint8_t loopback_buf[128]; // Buffer for incoming serial data
 
     // --- MAIN LOOP ---
-while (1)
+    while (1)
     {
         // --- 1. THE LOOPBACK CHECK ---
         // We still read the bytes to clear the buffer so it doesn't get backed up,
@@ -1189,17 +1322,17 @@ while (1)
         int len = uart_read_bytes(UART_NUM_1, loopback_buf, sizeof(loopback_buf) - 1, 20 / portTICK_PERIOD_MS);
         if (len > 0)
         {
-            loopback_buf[len] = '\0'; 
+            loopback_buf[len] = '\0';
             // ESP_LOGI removed from here to stop the system freeze.
         }
 
         // --- EXECUTION LOGIC ---
         if (AUDIO_ENABLED == 1 && !is_audio_playing)
         {
-            is_audio_playing = true; 
+            is_audio_playing = true;
             trigger_autoplay_from_sd();
         }
-        
-        vTaskDelay(pdMS_TO_TICKS(1000)); 
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

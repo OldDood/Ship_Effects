@@ -2,21 +2,26 @@
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
 
+### 🚢 ShipEffects S3 v1.4 | Logic Engine Update
+
+**New in this version:**
+
+* **Brightness State Mapping:** Added the `wled_discover_presets()` function to act as a startup "sync" between the controller and the lights.
+* **The `DefaultIDBrightness` Array:** This new array serves as a local reference table. At boot-up, the system now polls every preset (1–16) and stores their exact brightness levels in this table.
+* **Why this was added:** To ensure the ESP32 knows exactly how bright every light is *before* it starts making automation decisions. By having this "master list" in memory, the system can instantly recall the correct lighting levels without having to ask the WLED controller over and over again during operation.
+* **Verified Logging:** Added a visual confirmation to the logs that shows the array filling up in real-time. This proves that the data in the "brain" matches the actual settings on the ship.
+
+---
+
+**In short:** This update ensures the system starts with a perfect "mental map" of all light settings, making the automation faster and more reliable.
 ### 📡 Latest Feature: Wireless Logging (UDP)
 **✨ Remote Debugging: You can now monitor marker timing precision and playback status via the WiFi without a USB connection!**
 
-**The Wireless Logging Gatekeeper is a stability-focused logging architecture designed to provide real-time system diagnostics over Wi-Fi without impacting critical boot-time network handshakes.**
-
-**What it is**
-Unlike standard serial logging, this system redirects ESP_LOG output to a remote IP address via UDP. To maintain high availability for the Web Portal and SNTP services, the logging engine uses a Gated Execution strategy: it remains dormant until the network stack confirms a successful Time Sync (SNTP).
-
-**How to Use It**
-To monitor the Ship's internal state wirelessly (e.g., marker triggers, audio state, or sensor data):
-
-Prepare the Listener: Ensure your workstation (PC/Laptop) is on the same network and set to a static IP (default: 10.0.0.43).
-
-Open a UDP Client: Use **Packet Sender** or **netcat** to listen on Port 5555.
-
+**Todo:**
+Now that the intital brightness has been recorded
+Add ambient light sensor
+Make each preset LED brightness based on a ratio between ambient light and the default brightness for each preset when first triggered
+__________________________________________________________________________________________
 **Boot Sequence:**
 
 0–2s: System initializes hardware (SD, I2S) and connects to Wi-Fi. (Output is USB-only during this phase).
@@ -209,6 +214,17 @@ Format: JSON-encapsulated commands.Operational Logic: The S3 Master Engine parse
 **Field Definition:**
 **ps (Preset): The ID of the preset to activate. This corresponds to preset ID1 in the WLED web interface.**
 
+## Wireless Monitoring over WiFi
+
+**What it is**
+Unlike standard serial logging, this system redirects ESP_LOG output to a remote IP address via UDP. To maintain high availability for the Web Portal and SNTP services, the logging engine uses a Gated Execution strategy: it remains dormant until the network stack confirms a successful Time Sync (SNTP).
+
+**How to Use It**
+To monitor the Ship's internal state wirelessly (e.g., marker triggers, audio state, or sensor data):
+
+Prepare the Listener: Ensure your workstation (PC/Laptop) is on the same network and set to a static IP (default: 10.0.0.43).
+
+Open a UDP Client: Use **Packet Sender** or **netcat** to listen on Port 5555.
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
