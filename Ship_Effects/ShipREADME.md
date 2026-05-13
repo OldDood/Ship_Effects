@@ -4,44 +4,18 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 ### 🚢 ShipEffects S3 v1.4 | Logic Engine Update
 
-**New in this version:**
+**New in this version:**`
 
-* **Brightness State Mapping:** Added the `wled_discover_presets()` function to act as a startup "sync" between the controller and the lights.
-* **The `DefaultIDBrightness` Array:** This new array serves as a local reference table. At boot-up, the system now polls every preset (1–16) and stores their exact brightness levels in this table.
-* **Why this was added:** To ensure the ESP32 knows exactly how bright every light is *before* it starts making automation decisions. By having this "master list" in memory, the system can instantly recall the correct lighting levels without having to ask the WLED controller over and over again during operation.
-* **Verified Logging:** Added a visual confirmation to the logs that shows the array filling up in real-time. This proves that the data in the "brain" matches the actual settings on the ship..
-* **Ambient veml6030 light sensor commisioned** AmbientLightLux variable has a 10 second update time
-* **Added moving average code** AmbientLightLuxAvg variable tested and response, while fairly slow seems suitable.
-* **Added logging for light sensor**
----
-**In short:** This update ensures the system starts with a perfect "mental map" of all light settings, making the automation faster and more reliable.
-### 📡 Latest Feature: Wireless Logging (UDP)
-**✨ Remote Debugging: You can now monitor marker timing precision and playback status via the WiFi without a USB connection!**
+* **Auto adjustment of every WLED preset initial brightness based on the integral ambient light sensor lux value**
+This ensures that the LED display is dimmer in low ambient light and brighter in high ambient 
+* This feature is operational and tested
+* ------------------------------
 
 **Todo:**
-Make each preset LED brightness based on a ratio between average ambient light.[i] when first triggered.
-Change the following-
-typedef struct
-{
-    uint32_t trigger_ms; // The time in milliseconds (calculated from the CSV)
-    uint8_t marker_id;   // The ID (1 to 16)
-    bool triggered;      // A "latch" to ensure it only fires once per song
-} audio_marker_t;
+Fully test the operation of the auto brightness feature and tweak gain if necessary. 
+The current volume control slider is not logarithmic to match our ear response.
+Synchronise Audio Reactive feature synchronising the adjustment of the WLED preset sensitivity with the ShipEffects volume control setting.
 
-to this-
-
-typedef struct
-{
-    uint32_t trigger_ms; // The time in milliseconds (calculated from the CSV)
-    uint8_t marker_id;   // The ID (1 to 16)
-    bool triggered;      // A "latch" to ensure it only fires once per song
-    uint8_t preset_brightness: //Contains the initial brightness value for each preset after adjusting for the ambient light intensity
-} audio_marker_t;
-
-When the marker is triggered-
-The new timeline(x).preset_brightness is to be populated with percent(AmbientLightLuxAvg) * (DefaultIDBrightness(marker_id)
-The existing marker command to request a new preset (int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);)
-is to be appended with timeline(markerID).preset_brightness wled command to change the initial preset brightness in WLED
 __________________________________________________________________________________________
 **Boot Sequence:**
 

@@ -109,9 +109,10 @@ The markers contains a trigger time (in ms), a marker ID (1-16), and a "triggere
 // 1. Define what a single Marker looks like
 typedef struct
 {
-    uint32_t trigger_ms; // The time in milliseconds (calculated from the CSV)
-    uint8_t marker_id;   // The ID (1 to 16)
-    bool triggered;      // A "latch" to ensure it only fires once per song
+    uint32_t trigger_ms;     
+    uint8_t marker_id;       
+    bool triggered;          
+    uint8_t preset_brightness; // Snapshot of calculated brightness
 } audio_marker_t;
 
 // 2. Define the Container (The Timeline)
@@ -748,27 +749,46 @@ void init_wled_serial()
     ESP_LOGI("WLED", "Serial Bridge Initialized on UART1 (TX:17, RX:18)");
 }
 
-void send_wled_command(uint8_t marker_id)
+void send_wled_command(uint8_t timeline_index)
 {
-    // Safety check: 0 is usually 'off' or 'idle' in WLED,
-    // so we only send if the ID is within our expected range.
-    if (marker_id < 1 || marker_id > 16)
+    // Retrieve the specific marker data
+    uint8_t m_id = ship_timeline.markers[timeline_index].marker_id;
+
+    // 1. Expanded Safety Check
+    // WLED supports up to 250 presets, but we'll cap at 100 for your project
+    if (m_id < 1 || m_id > 100)
     {
-        ESP_LOGW("WLED", "Invalid marker_id: %d (Skipping)", marker_id);
+        ESP_LOGW("WLED", "Marker ID %d at Index %d is out of bounds (1-100)", m_id, timeline_index);
         return;
     }
 
-    char json_cmd[32]; // Buffer to hold the JSON command string
-    /*
-        "ps": marker_id -> Loads the preset
-        example JSON command to set preset 5: {"ps":5}
-        */
-    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", marker_id);
+    // 2. The Ambient Light Ratio (Positive Scaling)
+    // 800 Lux = 100% intensity
+    float ratio = (AmbientLightLuxAvg / 800.0f); 
+    
+    // Clamp between 10% (Floor) and 100% (Ceiling)
+    if (ratio < 0.1f) ratio = 0.1f; 
+    if (ratio > 1.0f) ratio = 1.0f;
 
-    // Write to UART1 (Assuming UART1 is your WLED bridge)
+    // 3. Dynamic Brightness Calculation
+    // Pull from the expanded DefaultIDBrightness table
+    uint8_t base_val = DefaultIDBrightness[m_id];
+    uint8_t final_bri = (uint8_t)(base_val * ratio);
+    
+    // Store in the timeline for your UDP/Wireless logging
+    ship_timeline.markers[timeline_index].preset_brightness = final_bri;
+
+    // 4. Construct Command
+    // Example: {"ps":99,"bri":150}
+    char json_cmd[64]; 
+    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d,\"bri\":%d}\n", m_id, final_bri);
+
+    // 5. Fire to WLED via UART
     uart_write_bytes(UART_NUM_1, json_cmd, len);
 
-    ESP_LOGI("WLED", "Marker %d -> WLED JSON sent: %s", marker_id, json_cmd);
+// 6. Updated Logging for easier visual calibration
+ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d)", 
+          timeline_index, m_id, final_bri, base_val);
 }
 
 void play_mp3_file(const char *path)
