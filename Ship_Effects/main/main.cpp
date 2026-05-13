@@ -40,12 +40,58 @@ See ShipREADME.md for project overview and details.
 #include "driver/i2s_std.h" // For I2S audio output to the MAX98357A
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3.h"
+#include "driver/i2c.h"
 
 #include "freertos/semphr.h" // Required for the Mutex
 
 #include <sys/stat.h>
 
 #include <dirent.h>
+
+// I2C Configuration
+#define I2C_MASTER_SDA_IO 1
+#define I2C_MASTER_SCL_IO 2
+#define I2C_MASTER_NUM I2C_NUM_0
+#define I2C_MASTER_FREQ_HZ 100000
+#define I2C_MASTER_TX_BUF_DISABLE 0
+#define I2C_MASTER_RX_BUF_DISABLE 0
+
+// VEML6030 Specifics
+#define VEML6030_ADDR 0x10
+#define VEML_REG_CONF 0x00
+#define VEML_REG_ALS_DATA 0x04
+// Gain 1/8, IT 100ms (Good for SA sunlight/window exposure)
+#define VEML_CONF_VAL 0x1000
+
+static int lux_timer_count_seconds = 0;// This is a simple timer variable that increments every second in the main loop. When it reaches 10, we will trigger a new Lux reading from the VEML6030 sensor. This allows us to keep our ambient light level updated without blocking the main loop with frequent sensor reads. The timer resets after each reading, creating a cycle of one Lux measurement every 10 seconds. You can adjust the frequency by changing the threshold value (currently set to 10) as needed for your application.
+float AmbientLightLux = 0.0; // Global variable to hold the current Lux reading from the VEML6030 sensor. This variable is updated by the sensor reading function and can be accessed by other parts of the program to make decisions based on ambient light levels.
+float AmbientLightLuxAvg = 0.0; // This variable will hold a running average of the ambient light levels. It can be updated each time a new Lux reading is taken, using a simple moving average formula to smooth out fluctuations in the sensor data. This provides a more stable value for decision-making processes that depend on ambient light conditions, such as adjusting visual effects or triggering certain actions when the environment is too bright or too dark.
+/* --- Forward Declarations --- */
+
+/**
+ * @brief Initialize I2C peripheral as Master
+ */
+esp_err_t i2c_master_init(void);
+
+/**
+ * @brief Write 16-bit value to a VEML6030 register (Low Byte first)
+ */
+esp_err_t veml_write_reg(uint8_t reg, uint16_t data);
+
+/**
+ * @brief Read 16-bit value from a VEML6030 register
+ */
+esp_err_t veml_read_reg(uint8_t reg, uint16_t *data);
+
+/**
+ * @brief High-level setup to config I2C and the sensor
+ */
+void veml6030_setup(void);
+
+/**
+ * @brief Read raw ALS data and convert to Lux
+ */
+float veml6030_read_lux(void);
 
 /*
 The SemaphoreHandle_t type is a pointer to an opaque structure that represents a semaphore in FreeRTOS.
@@ -121,6 +167,8 @@ void load_timeline_from_csv(const char *file_path); // Forward declaration of th
 void set_wled_bus_value(uint8_t value);             // Forward declaration of the function to set the WLED bus value based on the marker ID
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
 void start_wifi_logging();                          // Forward declaration of the function to start sending logs over WiFi to the PC
+void MeasureAmbientLight();                         // Forward declaration of the function to read ambient light from the VEML6030 sensor and update the global 'lux' variable
+
 /**
  * @brief Prototype for the WLED Serial Bridge
  * Sends a JSON preset command based on the timeline marker_id.
@@ -398,7 +446,6 @@ void trigger_autoplay_from_sd()
         ESP_LOGI("BOOT", "No autoplay.txt found. Waiting for web command.");
         return;
     }
-
     playback_cmd_t cmd;
     memset(&cmd, 0, sizeof(playback_cmd_t));
 
@@ -1167,7 +1214,8 @@ void wled_discover_presets()
     memset(DefaultIDBrightness, 0, sizeof(DefaultIDBrightness));
 
     char *rx_buf = (char *)malloc(2048);
-    if (!rx_buf) return;
+    if (!rx_buf)
+        return;
 
     int max_ids = 16;
 
@@ -1183,26 +1231,29 @@ void wled_discover_presets()
         int retry_wait = 0;
         bool match_found = false;
 
-        while (retry_wait < 20) 
+        while (retry_wait < 20)
         {
             int available = 0;
-            uart_get_buffered_data_len(UART_NUM_1, (size_t*)&available);
-            
-            if (available > 200) { 
+            uart_get_buffered_data_len(UART_NUM_1, (size_t *)&available);
+
+            if (available > 200)
+            {
                 len = uart_read_bytes(UART_NUM_1, (uint8_t *)rx_buf, 2047, pdMS_TO_TICKS(300));
-                if (len > 0) {
+                if (len > 0)
+                {
                     rx_buf[len] = '\0';
-                    
+
                     char id_pattern[32];
                     snprintf(id_pattern, sizeof(id_pattern), "\"ps\":%d", i);
 
-                    if (strstr(rx_buf, id_pattern)) 
+                    if (strstr(rx_buf, id_pattern))
                     {
                         char *bri_ptr = strstr(rx_buf, "\"bri\":");
-                        if (bri_ptr) {
+                        if (bri_ptr)
+                        {
                             DefaultIDBrightness[i] = (uint8_t)atoi(bri_ptr + 6);
                             match_found = true;
-                            break; 
+                            break;
                         }
                     }
                 }
@@ -1216,7 +1267,8 @@ void wled_discover_presets()
             // Build the exact array string format: [43,100,5,0...]
             char array_view[128] = "";
             char bit[12];
-            for (int k = 1; k <= max_ids; k++) {
+            for (int k = 1; k <= max_ids; k++)
+            {
                 // Formatting to match your request: value then comma, no extra spaces
                 snprintf(bit, sizeof(bit), "%d%s", DefaultIDBrightness[k], (k == max_ids) ? "" : ",");
                 strcat(array_view, bit);
@@ -1225,15 +1277,117 @@ void wled_discover_presets()
             // The specific log format you requested
             ESP_LOGI("WLED", "Matched ID %02d: Bri %d | Array: [%s]", i, DefaultIDBrightness[i], array_view);
         }
-        else 
+        else
         {
             // Silently retry - warnings removed as per your request
-            i--; 
+            i--;
         }
     }
 
     ESP_LOGI("WLED", "Discovery Complete.");
     free(rx_buf);
+}
+
+esp_err_t i2c_master_init()
+{
+    i2c_config_t conf; // Don't initialize with {} yet
+
+    conf.mode = I2C_MODE_MASTER;
+    conf.sda_io_num = (gpio_num_t)I2C_MASTER_SDA_IO;
+    conf.scl_io_num = (gpio_num_t)I2C_MASTER_SCL_IO;
+    conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
+    conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
+    conf.clk_flags = 0; // It's good practice to zero this out on the S3
+
+    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
+    if (err != ESP_OK)
+        return err;
+
+    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+}
+
+esp_err_t veml_write_config(uint16_t data)
+{
+    uint8_t out[3];
+    out[0] = VEML_REG_CONF;
+    out[1] = data & 0xFF;        // LSB
+    out[2] = (data >> 8) & 0xFF; // MSB
+    return i2c_master_write_to_device(I2C_MASTER_NUM, VEML6030_ADDR, out, 3, pdMS_TO_TICKS(100));
+}
+
+void veml6030_setup()
+{
+    ESP_LOGI(TAG, "Starting I2C Init...");
+    if (i2c_master_init() != ESP_OK)
+    {
+        ESP_LOGE(TAG, "I2C Driver Install Failed");
+        return;
+    }
+
+    if (veml_write_config(VEML_CONF_VAL) == ESP_OK)
+    {
+        ESP_LOGI(TAG, "VEML6030 Initialized (Gain 1/8, 100ms IT)");
+        vTaskDelay(pdMS_TO_TICKS(10)); // Power-up delay
+    }
+    else
+    {
+        ESP_LOGE(TAG, "VEML6030 NOT FOUND at 0x10");
+    }
+}
+
+esp_err_t veml_read_reg(uint8_t reg, uint16_t *data)
+{
+    uint8_t raw[2];
+    esp_err_t err = i2c_master_write_read_device(I2C_MASTER_NUM, VEML6030_ADDR, &reg, 1, raw, 2, pdMS_TO_TICKS(100));
+    if (err == ESP_OK)
+    {
+        *data = (raw[1] << 8) | raw[0]; // Combine MSB and LSB (LSB was raw[0])
+    }
+    return err;
+}
+
+float veml6030_read_lux()
+{
+    uint16_t raw_als;
+    if (veml_read_reg(VEML_REG_ALS_DATA, &raw_als) == ESP_OK)
+    {
+        // At Gain 1/8 and 100ms Integration Time, resolution is 0.4608
+        return (float)raw_als * 0.4608f;
+    }
+    return -1.0f; // Error state
+}
+
+void MeasureAmbientLight()
+{
+    static bool is_first_read = true; // Flag to seed the average
+    float raw_reading = veml6030_read_lux();
+
+    if (raw_reading >= 0.0f)
+    {
+        AmbientLightLux = raw_reading;
+
+        if (is_first_read)
+        {
+            // Seed the average so we don't start from zero
+            AmbientLightLuxAvg = AmbientLightLux;
+            is_first_read = false;
+            ESP_LOGI(TAG, "Lux Sensor Seeded: %.2f Lux", AmbientLightLuxAvg);
+        }
+        else
+        {
+            // Standard Exponential Moving Average (10% weight to new data)
+            float alpha = 0.1f;
+            AmbientLightLuxAvg = (alpha * AmbientLightLux) + ((1.0f - alpha) * AmbientLightLuxAvg);
+        }
+
+        ESP_LOGI(TAG, "Lux Reading | Raw: %.2f | Rolling Avg: %.2f", 
+                 AmbientLightLux, AmbientLightLuxAvg);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "I2C Read Error at 0x10 - Check Wiring on GPIO 1/2");
+    }
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -1254,12 +1408,13 @@ extern "C" void app_main()
 
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
-    init_sd_card();     // SD Card must be initialized before the web portal, which may serve files from it.
-    init_wifi();        // WiFi should be started before SNTP to ensure time can be synced.
-    init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
+
+    veml6030_setup(); // Call this once during initialization to set up the sensor
+    init_sd_card(); // SD Card must be initialized before the web portal, which may serve files from it.
+    init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
+    init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
     init_wled_serial();
-
     current_volume = load_volume_from_nvs(); // Load the saved volume level from flash memory
     set_master_volume(current_volume);       // Apply the loaded volume to the audio system immediately
 
@@ -1267,13 +1422,13 @@ extern "C" void app_main()
     AUDIO_ENABLED = load_play_state_from_nvs();
 
     ESP_LOGI(TAG, "Ship Audio Engine is: %s", AUDIO_ENABLED ? "ARMED" : "DISARMED");
-
     // Launch the playback task with 16KB of stack
     playback_queue = xQueueCreate(5, sizeof(playback_cmd_t));
     xTaskCreatePinnedToCore(audio_playback_task, "AudioTask", 32768, NULL, 5, NULL, 1);
 
     // The MUTEX purpose is to protect the integrity of the timeline data structure when accessed by multiple tasks. In this case, both the web portal task and the audio playback task may need to read from or write to the timeline (e.g., adding new markers, checking for triggers). The mutex ensures that only one task can access the timeline at a time,
     //  Create the Mutex lock for the timeline
+
     ship_timeline.mutex = xSemaphoreCreateMutex();
     ship_timeline.count = 0; // Start with an empty list
 
@@ -1325,6 +1480,13 @@ extern "C" void app_main()
             loopback_buf[len] = '\0';
             // ESP_LOGI removed from here to stop the system freeze.
         }
+
+if (lux_timer_count_seconds >= 10) 
+{
+    MeasureAmbientLight();// Check the light level every 10 seconds and log it
+    lux_timer_count_seconds = 0; // Reset the clock
+}
+lux_timer_count_seconds++;
 
         // --- EXECUTION LOGIC ---
         if (AUDIO_ENABLED == 1 && !is_audio_playing)

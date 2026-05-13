@@ -7,6 +7,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES 
         esp_driver_i2s 
+        esp_driver_i2c
         fatfs 
         sdmmc 
         esp_wifi 
