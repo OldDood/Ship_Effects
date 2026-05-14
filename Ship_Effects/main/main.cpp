@@ -765,19 +765,21 @@ void send_wled_command(uint8_t timeline_index)
 
     // 2. The Ambient Light Ratio (Positive Scaling)
     // 800 Lux = 100% intensity
-    float ratio = (AmbientLightLuxAvg / 800.0f);
+    float ratio = (AmbientLightLuxAvg / 333.0f); // This means at 333 Lux, the ratio is 1.0 (100% brightness), this is the "sweet spot" for your room. At 800 Lux, the ratio would be ~2.4, which is why we need to clamp it.
 
-    // Clamp between 10% (Floor) and 100% (Ceiling)
-    if (ratio < 0.1f)
-        ratio = 0.1f;
-    if (ratio > 1.0f)
-        ratio = 1.0f;
+    // Clamp between 1% (Minimum Floor) and 200% (Maximum Ceiling)
+    if (ratio < 0.01f)
+        ratio = 0.01f;
+    if (ratio > 2.0f)
+        ratio = 2.0f;
 
     // 3. Dynamic Brightness Calculation
     // Pull from the expanded DefaultIDBrightness table
     uint8_t base_val = DefaultIDBrightness[m_id];
     uint8_t final_bri = (uint8_t)(base_val * ratio);
-
+    if (final_bri > 255)
+        final_bri = 255; // Ensure we don't exceed WLED's maximum brightness
+        
     // Store in the timeline for your UDP/Wireless logging
     ship_timeline.markers[timeline_index].preset_brightness = final_bri;
 
@@ -789,9 +791,10 @@ void send_wled_command(uint8_t timeline_index)
     // 5. Fire to WLED via UART
     uart_write_bytes(UART_NUM_1, json_cmd, len);
 
+    ESP_LOGI("WLED","{\"ps\":%d,\"bri\":%d}\n", m_id, final_bri);// Also log the exact command we sent for easier debugging on the WLED side. This way, if something looks off in WLED, we can confirm whether the issue is with our command generation or with WLED's processing of it.
     // 6. Updated Logging for easier visual calibration
-    // delete ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d)",
-    //         timeline_index, m_id, final_bri, base_val);
+    ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d | AvgLux: %d)",
+    timeline_index, m_id, final_bri, base_val, (int)AmbientLightLuxAvg);
 }
 
 void play_mp3_file(const char *path)
@@ -891,21 +894,21 @@ void play_mp3_file(const char *path)
             // Check if any markers need to fire
             if (xSemaphoreTake(ship_timeline.mutex, 0) == pdTRUE)
             {
-                for (int i = 0; i < ship_timeline.count; i++)
+                for (int index = 0; index < ship_timeline.count; index++)
                 {
-                    if (!ship_timeline.markers[i].triggered && current_ms >= ship_timeline.markers[i].trigger_ms)
+                    if (!ship_timeline.markers[index].triggered && current_ms >= ship_timeline.markers[index].trigger_ms)
                     {
 
-                        ship_timeline.markers[i].triggered = true; // Set flag so it only fires once
+                        ship_timeline.markers[index].triggered = true; // Set flag so it only fires once
 
                         // Pull the ID and Time directly from the struct that the logic JUST used
                         ESP_LOGI("SYNC", "IDX:%d | ID:%u | Target:%lu | Actual:%lu",
-                                 i,
-                                 ship_timeline.markers[i].marker_id,
-                                 ship_timeline.markers[i].trigger_ms,
+                                 index,
+                                 ship_timeline.markers[index].marker_id,
+                                 ship_timeline.markers[index].trigger_ms,
                                  current_ms);
 
-                        send_wled_command(ship_timeline.markers[i].marker_id); // The new Serial link;
+                        send_wled_command(index); // The new Serial link;
                     }
                 }
                 xSemaphoreGive(ship_timeline.mutex);

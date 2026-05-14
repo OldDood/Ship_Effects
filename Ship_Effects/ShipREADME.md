@@ -1,16 +1,21 @@
-### 🚢 ShipEffects S3 v1.4: Audio & Logic Engine with OTA
+### 🚢 ShipEffects S3 v1.5: Audio & Logic Engine with OTA
 
 A high-performance automation and telemetry engine for a ship model display, running on the **ESP32-S3-WROOM**. 
 
-### 🚢 ShipEffects S3 v1.4 | Logic Engine Update
+### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
 
-* **Refinement of log messages and memory management**
-On thorough examination of log message there apeared to be a serious bug in the log messages when play was enable.
-The root cause was found to be improper descriptions in the log messages. There was no actual bug.
-Memory management was refined while tracing the bug although it was found that memory management was not the root cuase
-* This feature is operational and tested
+* **More Refinement of log messages for debugging**
+Example of log message sequence to select WLED preset PS3 and adjust its starting brightness to the default of 5 below-
+SYNC: IDX:2 | ID:3 | Target:118045 | Actual:118047                          **Trigger details for new preset**
+WLED: {"ps":3,"bri":5}\n                                                    **Actual WLED serial communication message**)**
+WLED: [Timeline 2] PS: 3 | Adjusted Bri: 5 (Original: 5 | AvgLux: 357)      **Description of Actual WLED serial communication message**
+
+* **Bug fixed with commands sent to WLED to trigger presets** now working correctly, previous versions were not!
+* **Auto Brightness Calibrated** The auto brightness default is set to 333 lux. This is the approximate brightness of a room well lit with artificial lights.
+Note- when setting up the WLED presets brightness, ensure that it is done in a artificially lit room. Minimum sunlight.
+This will ensure that the automatic brightness adjustment will match the ambient light conditions automatically.
 * ------------------------------
 
 **Todo:**
