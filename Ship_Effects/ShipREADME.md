@@ -6,13 +6,16 @@ A high-performance automation and telemetry engine for a ship model display, run
 
 **New in this version:**`
 
-* **Auto adjustment of every WLED preset initial brightness based on the integral ambient light sensor lux value**
-This ensures that the LED display is dimmer in low ambient light and brighter in high ambient 
+* **Refinement of log messages and memory management**
+On thorough examination of log message there apeared to be a serious bug in the log messages when play was enable.
+The root cause was found to be improper descriptions in the log messages. There was no actual bug.
+Memory management was refined while tracing the bug although it was found that memory management was not the root cuase
 * This feature is operational and tested
 * ------------------------------
 
 **Todo:**
-Fully test the operation of the auto brightness feature and tweak gain if necessary. 
+Create a commissioning sheet Ship_effects.ods to refine and record the following process
+Fully test the operation of the auto brightness feature and tweak gain and WLED presets where necessary. 
 The current volume control slider is not logarithmic to match our ear response.
 Synchronise Audio Reactive feature synchronising the adjustment of the WLED preset sensitivity with the ShipEffects volume control setting.
 
@@ -178,7 +181,9 @@ The management interface now supports the following remote commands:
 4.  **Digital Bus:** Starts I2S Clocks and attaches the driver.
 5.  **Network & Time:** Connects WiFi and synchronizes ACST time.
 6.  **Web Portal:** Launches interface, including the **Volume Control Handler**.
-7.  **Audio Task Launch:** Pinned to **Core 1**, initializing the `master_volume` variable for the decoder loop.
+7.  * **Initialise auto adjustment of every WLED preset initial brightness based on the integral ambient light sensor lux value**
+    init_timeline() - This ensures that the LED display is dimmer in low ambient light and brighter in high ambient 
+8.  **Audio Task Launch:** Pinned to **Core 1**, initializing the `master_volume` variable for the decoder loop.
 
 ---
 ## 🛰️ Serial bus to WLED controller
@@ -195,13 +200,16 @@ The management interface now supports the following remote commands:
 ## 🚀 Execution Flow (`app_main`)
 1.  **NVS Init:** Prepares flash for WiFi credentials.
 2.  **System Event Group:** Creates `s_system_event_group` to sync network/audio states.
-3.  **Peripheral Warm-up:** Initializes SD Card (**GPIO 38-40**) and Amplifier (**GPIO 4-5**) hardware.
-4.  **Digital Bus:** Starts I2S Clocks (**GPIO 7 & 15**) and attaches the driver.
-5.  **Network & Time:** Connects WiFi (with `WIFI_PS_NONE` for stability) and synchronizes ACST time via SNTP.
-6.  **Web Portal:** Launches the management interface for remote telemetry and file control.
-7.  **Audio Task Launch:** Pinned to **Core 1** with a 10s wait for WiFi/Time sync to ensure DMA stability.
+3.  **Initialise timeline data structure** This is to ensure there are no inadvertant memory overwrites while initialisig the following periperals
+4.  **Initialise the Ambient light sensor** veml6030_setup() function sets up the light sensor I2C bus communication (**GPIO 1-2**) hardware.
+5.  **Peripheral Warm-up:** init_sd_card() Initializes SD Card (**GPIO 38-40**)
+6.  **Network & Time:** init_wifi() Connects WiFi (with `WIFI_PS_NONE` for stability) and synchronizes ACST time via SNTP.
+7.  **Web Portal:** Launches the management interface for remote telemetry and file control.
+8.  **Audio Task Launch:** Pinned to **Core 1** with a 10s wait for WiFi/Time sync to ensure DMA stability.
+9.  **Digital Bus:**  init_speaker_hardware() & init_i2s_driver() Starts I2S Clocks (**GPIO 7 & 15**) and attaches the driver. Amplifier (**GPIO 4-5**) hardware.
+10. **Log message redirected to WiFi** Start_wifi_logging(); Function to start sending log messages over WiFi to the PC via UDP port 5555.(View with Packet Sender or similar App.)
 
----
+-------------
 ## 🛰️ WLED Serial JSON Bridge (v1.3)Protocol: Asynchronous Serial (UART)Baud Rate: 115200 
 Format: JSON-encapsulated commands.Operational Logic: The S3 Master Engine parses markers within the MP3 stream. Upon hitting a marker, a JSON command message sent via UART1 to the WLED controller. These commands control the presets on the WLED controller. Other commands can be added if required by modifying send_wled_command(uint8_t marker_id) function in main.cpp
 

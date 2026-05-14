@@ -63,9 +63,9 @@ See ShipREADME.md for project overview and details.
 // Gain 1/8, IT 100ms (Good for SA sunlight/window exposure)
 #define VEML_CONF_VAL 0x1000
 
-static int lux_timer_count_seconds = 0;// This is a simple timer variable that increments every second in the main loop. When it reaches 10, we will trigger a new Lux reading from the VEML6030 sensor. This allows us to keep our ambient light level updated without blocking the main loop with frequent sensor reads. The timer resets after each reading, creating a cycle of one Lux measurement every 10 seconds. You can adjust the frequency by changing the threshold value (currently set to 10) as needed for your application.
-float AmbientLightLux = 0.0; // Global variable to hold the current Lux reading from the VEML6030 sensor. This variable is updated by the sensor reading function and can be accessed by other parts of the program to make decisions based on ambient light levels.
-float AmbientLightLuxAvg = 0.0; // This variable will hold a running average of the ambient light levels. It can be updated each time a new Lux reading is taken, using a simple moving average formula to smooth out fluctuations in the sensor data. This provides a more stable value for decision-making processes that depend on ambient light conditions, such as adjusting visual effects or triggering certain actions when the environment is too bright or too dark.
+static int lux_timer_count_seconds = 0; // This is a simple timer variable that increments every second in the main loop. When it reaches 10, we will trigger a new Lux reading from the VEML6030 sensor. This allows us to keep our ambient light level updated without blocking the main loop with frequent sensor reads. The timer resets after each reading, creating a cycle of one Lux measurement every 10 seconds. You can adjust the frequency by changing the threshold value (currently set to 10) as needed for your application.
+float AmbientLightLux = 0.0;            // Global variable to hold the current Lux reading from the VEML6030 sensor. This variable is updated by the sensor reading function and can be accessed by other parts of the program to make decisions based on ambient light levels.
+float AmbientLightLuxAvg = 0.0;         // This variable will hold a running average of the ambient light levels. It can be updated each time a new Lux reading is taken, using a simple moving average formula to smooth out fluctuations in the sensor data. This provides a more stable value for decision-making processes that depend on ambient light conditions, such as adjusting visual effects or triggering certain actions when the environment is too bright or too dark.
 /* --- Forward Declarations --- */
 
 /**
@@ -109,9 +109,9 @@ The markers contains a trigger time (in ms), a marker ID (1-16), and a "triggere
 // 1. Define what a single Marker looks like
 typedef struct
 {
-    uint32_t trigger_ms;     
-    uint8_t marker_id;       
-    bool triggered;          
+    uint32_t trigger_ms;
+    uint8_t marker_id;
+    bool triggered;
     uint8_t preset_brightness; // Snapshot of calculated brightness
 } audio_marker_t;
 
@@ -120,12 +120,13 @@ typedef struct
 {
     audio_marker_t markers[MAX_MARKERS];
     uint16_t count;          // How many markers were actually loaded
+    uint16_t current_index;  // This will track which marker is next to trigger based on the song's progress
     SemaphoreHandle_t mutex; // The "Lock" for thread safety
 } marker_timeline_t;
 
 // 3. Create the Global Instance
 // This is the "Shared Notepad" both tasks will use.
-marker_timeline_t ship_timeline;
+static marker_timeline_t ship_timeline;
 
 // --- I2S Audio Bus (The Digital Stream) ---
 #define I2S_BCLK_IO (GPIO_NUM_7) // Bit Clock: Synchronizes each individual bit of audio data.
@@ -169,7 +170,7 @@ void set_wled_bus_value(uint8_t value);             // Forward declaration of th
 void trigger_autoplay_from_sd();                    // Forward declaration of the function to trigger autoplay from SD card on boot
 void start_wifi_logging();                          // Forward declaration of the function to start sending logs over WiFi to the PC
 void MeasureAmbientLight();                         // Forward declaration of the function to read ambient light from the VEML6030 sensor and update the global 'lux' variable
-
+void init_timeline();                               // Forward declaration of the function to initialize the timeline data structure and its mutex
 /**
  * @brief Prototype for the WLED Serial Bridge
  * Sends a JSON preset command based on the timeline marker_id.
@@ -764,31 +765,33 @@ void send_wled_command(uint8_t timeline_index)
 
     // 2. The Ambient Light Ratio (Positive Scaling)
     // 800 Lux = 100% intensity
-    float ratio = (AmbientLightLuxAvg / 800.0f); 
-    
+    float ratio = (AmbientLightLuxAvg / 800.0f);
+
     // Clamp between 10% (Floor) and 100% (Ceiling)
-    if (ratio < 0.1f) ratio = 0.1f; 
-    if (ratio > 1.0f) ratio = 1.0f;
+    if (ratio < 0.1f)
+        ratio = 0.1f;
+    if (ratio > 1.0f)
+        ratio = 1.0f;
 
     // 3. Dynamic Brightness Calculation
     // Pull from the expanded DefaultIDBrightness table
     uint8_t base_val = DefaultIDBrightness[m_id];
     uint8_t final_bri = (uint8_t)(base_val * ratio);
-    
+
     // Store in the timeline for your UDP/Wireless logging
     ship_timeline.markers[timeline_index].preset_brightness = final_bri;
 
     // 4. Construct Command
     // Example: {"ps":99,"bri":150}
-    char json_cmd[64]; 
+    char json_cmd[64];
     int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d,\"bri\":%d}\n", m_id, final_bri);
 
     // 5. Fire to WLED via UART
     uart_write_bytes(UART_NUM_1, json_cmd, len);
 
-// 6. Updated Logging for easier visual calibration
-ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d)", 
-          timeline_index, m_id, final_bri, base_val);
+    // 6. Updated Logging for easier visual calibration
+    // delete ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d)",
+    //         timeline_index, m_id, final_bri, base_val);
 }
 
 void play_mp3_file(const char *path)
@@ -895,7 +898,9 @@ void play_mp3_file(const char *path)
 
                         ship_timeline.markers[i].triggered = true; // Set flag so it only fires once
 
-                        ESP_LOGI("SYNC", ">>> TRIGGER MARKER %d at %ld ms (Track Time: %ld ms)",
+                        // Pull the ID and Time directly from the struct that the logic JUST used
+                        ESP_LOGI("SYNC", "IDX:%d | ID:%u | Target:%lu | Actual:%lu",
+                                 i,
                                  ship_timeline.markers[i].marker_id,
                                  ship_timeline.markers[i].trigger_ms,
                                  current_ms);
@@ -1113,11 +1118,15 @@ void load_timeline_from_csv(const char *file_path)
                 ship_timeline.markers[marker_index].marker_id = (uint8_t)id_num;
                 ship_timeline.markers[marker_index].triggered = false;
 
-                ESP_LOGI("CSV", "Marker %d -> Clock Time: %ld ms", id_num, total_ms);
+                ESP_LOGI("CSV", "Index %d: ID %d at %ld ms",
+                         marker_index,
+                         ship_timeline.markers[marker_index].marker_id,
+                         ship_timeline.markers[marker_index].trigger_ms);
                 marker_index++;
             }
         }
         ship_timeline.count = marker_index;
+        ESP_LOGI("CSV", "Loaded %d markers into the timeline", ship_timeline.count);
         xSemaphoreGive(ship_timeline.mutex);
         fclose(f);
     }
@@ -1295,7 +1304,7 @@ void wled_discover_presets()
             }
 
             // The specific log format you requested
-            ESP_LOGI("WLED", "Matched ID %02d: Bri %d | Array: [%s]", i, DefaultIDBrightness[i], array_view);
+            // Delete ESP_LOGI("WLED", "Matched ID %02d: Bri %d | Array: [%s]", i, DefaultIDBrightness[i], array_view);
         }
         else
         {
@@ -1304,7 +1313,7 @@ void wled_discover_presets()
         }
     }
 
-    ESP_LOGI("WLED", "Discovery Complete.");
+    // Delete ESP_LOGI("WLED", "Discovery Complete.");
     free(rx_buf);
 }
 
@@ -1392,7 +1401,7 @@ void MeasureAmbientLight()
             // Seed the average so we don't start from zero
             AmbientLightLuxAvg = AmbientLightLux;
             is_first_read = false;
-            ESP_LOGI(TAG, "Lux Sensor Seeded: %.2f Lux", AmbientLightLuxAvg);
+            // Delete    ESP_LOGI(TAG, "Lux Sensor Seeded: %.2f Lux", AmbientLightLuxAvg);
         }
         else
         {
@@ -1401,13 +1410,23 @@ void MeasureAmbientLight()
             AmbientLightLuxAvg = (alpha * AmbientLightLux) + ((1.0f - alpha) * AmbientLightLuxAvg);
         }
 
-        ESP_LOGI(TAG, "Lux Reading | Raw: %.2f | Rolling Avg: %.2f", 
-                 AmbientLightLux, AmbientLightLuxAvg);
+        // delete  ESP_LOGI(TAG, "Lux Reading | Raw: %.2f | Rolling Avg: %.2f",
+        //            AmbientLightLux, AmbientLightLuxAvg);
     }
     else
     {
         ESP_LOGE(TAG, "I2C Read Error at 0x10 - Check Wiring on GPIO 1/2");
     }
+}
+
+// ALWAYS call this before using the timeline
+void init_timeline()
+{
+    ship_timeline.mutex = xSemaphoreCreateMutex();
+    ship_timeline.count = 0;
+    ship_timeline.current_index = 0;
+    // Initialize array to 0/false
+    memset(ship_timeline.markers, 0, sizeof(ship_timeline.markers));
 }
 
 // 8. MAIN APPLICATION ENTRY POINT
@@ -1426,13 +1445,15 @@ extern "C" void app_main()
 
     s_system_event_group = xEventGroupCreate(); // Create the system event group to track WiFi and SNTP readiness
 
+    init_timeline(); // Initialize the timeline and its mutex before starting any tasks that might use it
+
     // 2. NOW START SERVICES
     ESP_LOGI(TAG, "Initialised NVS Flash. Starting WiFi, SNTP, SD Card, and Web Portal...");
 
-    veml6030_setup(); // Call this once during initialization to set up the sensor
-    init_sd_card(); // SD Card must be initialized before the web portal, which may serve files from it.
-    init_wifi(); // WiFi should be started before SNTP to ensure time can be synced.
-    init_sntp(); // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
+    veml6030_setup();   // Call this once during initialization to set up the sensor
+    init_sd_card();     // SD Card must be initialized before the web portal, which may serve files from it.
+    init_wifi();        // WiFi should be started before SNTP to ensure time can be synced.
+    init_sntp();        // Start SNTP to sync time for accurate sunrise/sunset calculations and photo timestamps.
     start_web_portal(); // Start the web portal last, after all hardware and time services are up and running.
     init_wled_serial();
     current_volume = load_volume_from_nvs(); // Load the saved volume level from flash memory
@@ -1501,12 +1522,12 @@ extern "C" void app_main()
             // ESP_LOGI removed from here to stop the system freeze.
         }
 
-if (lux_timer_count_seconds >= 10) 
-{
-    MeasureAmbientLight();// Check the light level every 10 seconds and log it
-    lux_timer_count_seconds = 0; // Reset the clock
-}
-lux_timer_count_seconds++;
+        if (lux_timer_count_seconds >= 10)
+        {
+            MeasureAmbientLight();       // Check the light level every 10 seconds and log it
+            lux_timer_count_seconds = 0; // Reset the clock
+        }
+        lux_timer_count_seconds++;
 
         // --- EXECUTION LOGIC ---
         if (AUDIO_ENABLED == 1 && !is_audio_playing)
