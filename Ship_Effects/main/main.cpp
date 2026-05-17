@@ -765,13 +765,13 @@ void send_wled_command(uint8_t timeline_index)
 
     // 2. The Ambient Light Ratio (Positive Scaling)
     // 800 Lux = 100% intensity
-    float ratio = (AmbientLightLuxAvg / 333.0f); // This means at 333 Lux, the ratio is 1.0 (100% brightness), this is the "sweet spot" for your room. At 800 Lux, the ratio would be ~2.4, which is why we need to clamp it.
+    float ratio = (AmbientLightLuxAvg / 47.0f); // This means at 47 Lux, the ratio is 1.0 (100% brightness), this is the "sweet spot" for your room. At 800 Lux, the ratio would be ~17, which is why we need to clamp it.
 
-    // Clamp between 1% (Minimum Floor) and 200% (Maximum Ceiling)
+    // Clamp between 1% (Minimum Floor) and 300% (Maximum Ceiling)
     if (ratio < 0.01f)
         ratio = 0.01f;
-    if (ratio > 2.0f)
-        ratio = 2.0f;
+    if (ratio > 3.0f)
+        ratio = 3.0f;
 
     // 3. Dynamic Brightness Calculation
     // Pull from the expanded DefaultIDBrightness table
@@ -779,22 +779,26 @@ void send_wled_command(uint8_t timeline_index)
     uint8_t final_bri = (uint8_t)(base_val * ratio);
     if (final_bri > 255)
         final_bri = 255; // Ensure we don't exceed WLED's maximum brightness
-        
+
     // Store in the timeline for your UDP/Wireless logging
     ship_timeline.markers[timeline_index].preset_brightness = final_bri;
 
     // 4. Construct Command
     // Example: {"ps":99,"bri":150}
     char json_cmd[64];
-    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d,\"bri\":%d}\n", m_id, final_bri);
 
-    // 5. Fire to WLED via UART
+    int len = snprintf(json_cmd, sizeof(json_cmd), "{\"ps\":%d}\n", m_id); // First, we create the preset command to switch to the correct preset ID in WLED. The "\n" at the end ensures that WLED processes the command immediately, as it uses newline-delimited JSON commands over UART.
+                                                                           // 5. Fire to WLED via UART -Send the preset command first to trigger the preset change
     uart_write_bytes(UART_NUM_1, json_cmd, len);
+    ESP_LOGI("WLED", "{\"ps\":%d}\n", m_id); // Log the preset command we just sent for debugging purposes. This will show up in your WiFi logs and help you verify that the correct preset IDs are being triggered in WLED.
+    vTaskDelay(pdMS_TO_TICKS(200));          // Short delay to ensure WLED processes the preset change before we send the brightness adjustment. This is a simple way to ensure the commands are processed in order without overwhelming WLED with back-to-back commands.
 
-    ESP_LOGI("WLED","{\"ps\":%d,\"bri\":%d}\n", m_id, final_bri);// Also log the exact command we sent for easier debugging on the WLED side. This way, if something looks off in WLED, we can confirm whether the issue is with our command generation or with WLED's processing of it.
-    // 6. Updated Logging for easier visual calibration
+    len = snprintf(json_cmd, sizeof(json_cmd), "{\"bri\":%d}\n", final_bri); // Now we create the brightness command to adjust the brightness of the preset we just triggered. This is sent immediately after the preset command to ensure that the brightness is set according to the ambient light conditions, while still respecting the base brightness defined in the DefaultIDBrightness table for that preset ID.
+                                                                             // 6. Fire to WLED via UART - Then send the brightness command immediately after to adjust the brightness of the preset we just triggered. This two-step process ensures that we first switch to the correct preset, and then adjust its brightness, which is necessary because the brightness setting is part of the preset's state in WLED.
+    uart_write_bytes(UART_NUM_1, json_cmd, len);
+    ESP_LOGI("WLED", "{\"bri\":%d}\n", final_bri); // Log the brightness command we just sent for debugging purposes. This will show up in your WiFi logs and help you verify that the correct brightness values are being calculated and sent to WLED.
     ESP_LOGI("WLED", "[Timeline %d] PS: %d | Adjusted Bri: %d (Original: %d | AvgLux: %d)",
-    timeline_index, m_id, final_bri, base_val, (int)AmbientLightLuxAvg);
+             timeline_index, m_id, final_bri, base_val, (int)AmbientLightLuxAvg); // This log statement provides a comprehensive overview of the command being sent to WLED, including the timeline index, the preset ID, the final adjusted brightness, the original base brightness from the table, and the average ambient light level that influenced the adjustment. This will be invaluable for debugging and fine-tuning your system's responsiveness to ambient light conditions.
 }
 
 void play_mp3_file(const char *path)
@@ -826,7 +830,7 @@ void play_mp3_file(const char *path)
     mp3dec_init(&mp3d);
     mp3dec_frame_info_t info;
 
-    const int read_size = 4096;
+    const int read_size = 32768;
     uint8_t *input_buf = (uint8_t *)malloc(read_size);
     int16_t *pcm_buf = (int16_t *)malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t) * 2);
 
@@ -852,6 +856,21 @@ void play_mp3_file(const char *path)
             break;
 
         int samples = mp3dec_decode_frame(&mp3d, input_buf, bytes_left, pcm_buf, &info);
+
+        if (info.frame_bytes > 0)// If minimp3 successfully decoded a frame, we need to remove the bytes it consumed from the buffer before the next read
+        {
+            // Subtract the bytes minimp3 actually used
+            bytes_left -= info.frame_bytes;
+
+            // Shift the remaining un-decoded bytes to the beginning of the buffer
+            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+        }
+        else if (n == 0 && bytes_left > 0)
+        {
+            // If minimp3 couldn't decode a frame and we hit the End of File,
+            // drop a byte to prevent an infinite loop on a corrupt frame trailing at the end.
+            memmove(input_buf, input_buf + 1, --bytes_left);
+        }
 
         if (samples > 0)
         {

@@ -5,15 +5,25 @@ A high-performance automation and telemetry engine for a ship model display, run
 ### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
+Improved memory management of code that reads .MP3 files.
+May have had a bug that could have caused issues-
+New added code-
+        if (info.frame_bytes > 0)// If minimp3 successfully decoded a frame, we need to remove the bytes it consumed from the buffer before the next read
+        {
+            // Subtract the bytes minimp3 actually used
+            bytes_left -= info.frame_bytes;
 
-* **More Refinement of log messages for debugging**
-Example of log message sequence to select WLED preset PS3 and adjust its starting brightness to the default of 5 below-
-SYNC: IDX:2 | ID:3 | Target:118045 | Actual:118047                          **Trigger details for new preset**
-WLED: {"ps":3,"bri":5}\n                                                    **Actual WLED serial communication message**)**
-WLED: [Timeline 2] PS: 3 | Adjusted Bri: 5 (Original: 5 | AvgLux: 357)      **Description of Actual WLED serial communication message**
+            // Shift the remaining un-decoded bytes to the beginning of the buffer
+            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+        }
+        else if (n == 0 && bytes_left > 0)
+        {
+            // If minimp3 couldn't decode a frame and we hit the End of File,
+            // drop a byte to prevent an infinite loop on a corrupt frame trailing at the end.
+            memmove(input_buf, input_buf + 1, --bytes_left);
+        }
 
-* **Bug fixed with commands sent to WLED to trigger presets** now working correctly, previous versions were not!
-* **Auto Brightness Calibrated** The auto brightness default is set to 333 lux. This is the approximate brightness of a room well lit with artificial lights.
+* **Auto Brightness Calibrated** The auto brightness default is set to 47 lux. This is the approximate brightness of a room well lit with artificial lights not directly shining on sensor.
 Note- when setting up the WLED presets brightness, ensure that it is done in a artificially lit room. Minimum sunlight.
 This will ensure that the automatic brightness adjustment will match the ambient light conditions automatically.
 * ------------------------------
