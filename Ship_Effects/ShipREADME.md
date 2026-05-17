@@ -5,35 +5,9 @@ A high-performance automation and telemetry engine for a ship model display, run
 ### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
-Improved memory management of code that reads .MP3 files.
-May have had a bug that could have caused issues-
-New added code-
-        if (info.frame_bytes > 0)// If minimp3 successfully decoded a frame, we need to remove the bytes it consumed from the buffer before the next read
-        {
-            // Subtract the bytes minimp3 actually used
-            bytes_left -= info.frame_bytes;
+Updated ShipREADME.md
 
-            // Shift the remaining un-decoded bytes to the beginning of the buffer
-            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
-        }
-        else if (n == 0 && bytes_left > 0)
-        {
-            // If minimp3 couldn't decode a frame and we hit the End of File,
-            // drop a byte to prevent an infinite loop on a corrupt frame trailing at the end.
-            memmove(input_buf, input_buf + 1, --bytes_left);
-        }
-
-* **Auto Brightness Calibrated** The auto brightness default is set to 47 lux. This is the approximate brightness of a room well lit with artificial lights not directly shining on sensor.
-Note- when setting up the WLED presets brightness, ensure that it is done in a artificially lit room. Minimum sunlight.
-This will ensure that the automatic brightness adjustment will match the ambient light conditions automatically.
 * ------------------------------
-
-**Todo:**
-Create a commissioning sheet Ship_effects.ods to refine and record the following process
-Fully test the operation of the auto brightness feature and tweak gain and WLED presets where necessary. 
-The current volume control slider is not logarithmic to match our ear response.
-Synchronise Audio Reactive feature synchronising the adjustment of the WLED preset sensitivity with the ShipEffects volume control setting.
-
 __________________________________________________________________________________________
 **Boot Sequence:**
 
@@ -245,6 +219,20 @@ To monitor the Ship's internal state wirelessly (e.g., marker triggers, audio st
 Prepare the Listener: Ensure your workstation (PC/Laptop) is on the same network and set to a static IP (default: 10.0.0.43).
 
 Open a UDP Client: Use **Packet Sender** or **netcat** to listen on Port 5555.
+
+## Auto Brightness ##
+
+**Why is it required**
+To ensure that the light display is adjusted to an appropriate brightness for the ambient light conditions.
+e.g. Low ambient light = low led brightness.
+
+**How it works**
+The ESP32S3 control board is fitted with an external ambient light sensor that measures LUX.
+On boot, the code first reads the default brightness of every WLED preset and stores them.
+When a preset command is sent via the serial bus, the preset is selected and then the brightness of the preset is set according to a ratio of (default brightness)/(ambient light).
+The auto brightness default is set to 47 lux. This is the approximate brightness of a room well lit with artificial lights not directly shining on sensor.
+Note- when setting up the WLED presets brightness, ensure that it is done in an artificially lit room. Minimum sunlight.
+This will ensure that the automatic brightness adjustment will match the ambient light conditions automatically.
 
 ## ☀️ Background Solar Engine
 * **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
