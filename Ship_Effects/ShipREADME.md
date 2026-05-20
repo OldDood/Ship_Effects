@@ -5,7 +5,27 @@ A high-performance automation and telemetry engine for a ship model display, run
 ### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
-Updated ShipREADME.md
+### fix(audio): resolve playback stall and loop exit caused by buffer underflow ###
+
+Fixed a latent, data-dependent bug in the MP3 streaming loop where playback 
+would prematurely terminate or freeze after processing the first timeline marker.
+
+**Root Cause:**
+The MP3 decoding frame loop contained a duplicate buffer manipulation block 
+at the bottom of the loop cycle. `info.frame_bytes` was being subtracted from 
+`bytes_left` twice within a single iteration. Depending on the audio encoding 
+geometry (such as encoder padding, VBR, or frame sizes rendered by Reaper), 
+the second subtraction would cause `bytes_left` to catastrophically underflow. 
+This triggered an emergency buffer-mismatch safety clamp to 0, which tripped 
+the loop's exit condition (`if (bytes_left == 0) break;`) on the very next frame.
+
+**Changes:**
+- Removed the entire duplicate trailing `info.frame_bytes` conditional block.
+- Wrapped the primary buffer subtraction and `memmove` sequence in an explicit 
+  underflow guard (`if (bytes_left >= (size_t)info.frame_bytes)`) to ensure 
+  robustness against corrupted streaming frames.
+- Maintained uninterrupted timeline synchronization code execution across 
+  diverse MP3 stream payloads.
 
 * ------------------------------
 __________________________________________________________________________________________

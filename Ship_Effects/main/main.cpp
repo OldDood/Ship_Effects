@@ -791,7 +791,7 @@ void send_wled_command(uint8_t timeline_index)
                                                                            // 5. Fire to WLED via UART -Send the preset command first to trigger the preset change
     uart_write_bytes(UART_NUM_1, json_cmd, len);
     ESP_LOGI("WLED", "{\"ps\":%d}\n", m_id); // Log the preset command we just sent for debugging purposes. This will show up in your WiFi logs and help you verify that the correct preset IDs are being triggered in WLED.
-    vTaskDelay(pdMS_TO_TICKS(200));          // Short delay to ensure WLED processes the preset change before we send the brightness adjustment. This is a simple way to ensure the commands are processed in order without overwhelming WLED with back-to-back commands.
+    vTaskDelay(pdMS_TO_TICKS(20));           // Short delay to ensure WLED processes the preset change before we send the brightness adjustment. This is a simple way to ensure the commands are processed in order without overwhelming WLED with back-to-back commands.
 
     len = snprintf(json_cmd, sizeof(json_cmd), "{\"bri\":%d}\n", final_bri); // Now we create the brightness command to adjust the brightness of the preset we just triggered. This is sent immediately after the preset command to ensure that the brightness is set according to the ambient light conditions, while still respecting the base brightness defined in the DefaultIDBrightness table for that preset ID.
                                                                              // 6. Fire to WLED via UART - Then send the brightness command immediately after to adjust the brightness of the preset we just triggered. This two-step process ensures that we first switch to the correct preset, and then adjust its brightness, which is necessary because the brightness setting is part of the preset's state in WLED.
@@ -842,13 +842,12 @@ void play_mp3_file(const char *path)
 
     while (true)
     {
-        // Check the switch EVERY frame. If it's flipped to OFF (0), exit immediately!
-        // Inside your while(true) decoding loop
         if (AUDIO_ENABLED == 0)
         {
             ESP_LOGW("AUDIO", "Switch DISARMED: Killing playback.");
-            break; // Stops the music instantly
+            break;
         }
+
         size_t n = fread(input_buf + bytes_left, 1, read_size - bytes_left, f);
         bytes_left += n;
 
@@ -857,18 +856,22 @@ void play_mp3_file(const char *path)
 
         int samples = mp3dec_decode_frame(&mp3d, input_buf, bytes_left, pcm_buf, &info);
 
-        if (info.frame_bytes > 0)// If minimp3 successfully decoded a frame, we need to remove the bytes it consumed from the buffer before the next read
+        // --- SINGLE, CLEAN PARSING CONTEXT ---
+        if (info.frame_bytes > 0)
         {
-            // Subtract the bytes minimp3 actually used
-            bytes_left -= info.frame_bytes;
-
-            // Shift the remaining un-decoded bytes to the beginning of the buffer
-            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+            if (bytes_left >= (size_t)info.frame_bytes)
+            {
+                bytes_left -= info.frame_bytes;
+                memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+            }
+            else
+            {
+                // If the decoder somehow reports a frame larger than what is in the buffer, clear out gracefully
+                bytes_left = 0;
+            }
         }
         else if (n == 0 && bytes_left > 0)
         {
-            // If minimp3 couldn't decode a frame and we hit the End of File,
-            // drop a byte to prevent an infinite loop on a corrupt frame trailing at the end.
             memmove(input_buf, input_buf + 1, --bytes_left);
         }
 
@@ -880,14 +883,11 @@ void play_mp3_file(const char *path)
                 last_rate = info.hz;
             }
 
-            // --- NEW: Apply Volume Scaling ---
-            // 'samples' is samples per channel. Total samples = samples * info.channels
             int total_samples = samples * info.channels;
-            float current_gain = master_volume; // Local copy to prevent changes mid-buffer
+            float current_gain = master_volume;
 
             for (int i = 0; i < total_samples; i++)
             {
-                // Multiply sample by gain and clip to 16-bit boundaries
                 int32_t val = (int32_t)(pcm_buf[i] * current_gain);
                 if (val > 32767)
                     val = 32767;
@@ -899,51 +899,42 @@ void play_mp3_file(const char *path)
             size_t bytes_to_write = samples * info.channels * sizeof(int16_t);
             size_t bytes_written;
 
-            // Send PCM data to I2S
             i2s_channel_write(tx_handle, pcm_buf, bytes_to_write, &bytes_written, portMAX_DELAY);
 
             // --- SYNC ENGINE START ---
             total_bytes_sent += bytes_written;
-
-            // Calculate current playback time in milliseconds
-            // Formula: bytes / (samples_per_sec * channels * bytes_per_sample) * 1000
-            // For 44100Hz Stereo 16-bit: total_bytes_sent / 176.4
             uint32_t current_ms = (uint32_t)(total_bytes_sent / (info.hz * info.channels * 2.0 / 1000.0));
 
-            // Check if any markers need to fire
             if (xSemaphoreTake(ship_timeline.mutex, 0) == pdTRUE)
             {
+                int target_trigger_index = -1;
                 for (int index = 0; index < ship_timeline.count; index++)
                 {
                     if (!ship_timeline.markers[index].triggered && current_ms >= ship_timeline.markers[index].trigger_ms)
                     {
+                        ship_timeline.markers[index].triggered = true;
 
-                        ship_timeline.markers[index].triggered = true; // Set flag so it only fires once
-
-                        // Pull the ID and Time directly from the struct that the logic JUST used
                         ESP_LOGI("SYNC", "IDX:%d | ID:%u | Target:%lu | Actual:%lu",
-                                 index,
-                                 ship_timeline.markers[index].marker_id,
-                                 ship_timeline.markers[index].trigger_ms,
-                                 current_ms);
+                                 index, ship_timeline.markers[index].marker_id,
+                                 ship_timeline.markers[index].trigger_ms, current_ms);
 
-                        send_wled_command(index); // The new Serial link;
+                        target_trigger_index = index;
+                        break;
                     }
                 }
+
                 xSemaphoreGive(ship_timeline.mutex);
+
+                if (target_trigger_index != -1)
+                {
+                    send_wled_command(target_trigger_index);
+                }
             }
             // --- SYNC ENGINE END ---
         }
 
-        if (info.frame_bytes > 0)
-        {
-            bytes_left -= info.frame_bytes;
-            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
-        }
-
         vTaskDelay(1);
     }
-
     free(input_buf);
     free(pcm_buf);
     fclose(f);

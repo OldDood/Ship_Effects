@@ -1,9 +1,9 @@
 # Updated CMakeLists.txt for the main component
 idf_component_register(
     SRCS 
+        "main.cpp"    
         "ota.c" 
-        "web_portal.cpp" 
-       
+        "web_portal.cpp"        
     INCLUDE_DIRS "."
     REQUIRES 
         esp_driver_i2s 
