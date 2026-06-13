@@ -5,41 +5,13 @@ A high-performance automation and telemetry engine for a ship model display, run
 ### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
-### fix(audio): resolve playback stall and loop exit caused by buffer underflow ###
+### Will now autmaticall play all .mp3 files listed in autoplay.txt and play sequentially 
+Fix(autoplay): Implemented "Lazy Reader" Sequential Autoplay
+Upgraded the startup sequence from a single-track fire-and-forget execution to a robust, sequential file-reading state machine.
 
-Fixed a latent, data-dependent bug in the MP3 streaming loop where playback 
-would prematurely terminate or freeze after processing the first timeline marker.
+Logic: On boot, the master autoplay.txt file is opened and tracked globally. The system reads exactly one line, passes it to the playback queue, and stops.
 
-**Root Cause:**
-The MP3 decoding frame loop contained a duplicate buffer manipulation block 
-at the bottom of the loop cycle. `info.frame_bytes` was being subtracted from 
-`bytes_left` twice within a single iteration. Depending on the audio encoding 
-geometry (such as encoder padding, VBR, or frame sizes rendered by Reaper), 
-the second subtraction would cause `bytes_left` to catastrophically underflow. 
-This triggered an emergency buffer-mismatch safety clamp to 0, which tripped 
-the loop's exit condition (`if (bytes_left == 0) break;`) on the very next frame.
-
-**Changes:**
-- Removed the entire duplicate trailing `info.frame_bytes` conditional block.
-- Wrapped the primary buffer subtraction and `memmove` sequence in an explicit 
-  underflow guard (`if (bytes_left >= (size_t)info.frame_bytes)`) to ensure 
-  robustness against corrupted streaming frames.
-- Maintained uninterrupted timeline synchronization code execution across 
-  diverse MP3 stream payloads.
-
-* ------------------------------
-__________________________________________________________________________________________
-**Boot Sequence:**
-
-0–2s: System initializes hardware (SD, I2S) and connects to Wi-Fi. (Output is USB-only during this phase).
-
-~2s: Upon successful SNTP sync, the "Gate" opens.
-
-Active: You will see [SYS] Time Synced! Starting Wireless Logging... in your UDP client.
-
-
-**Technical Implementation**
-The logging is managed within the audio_playback_task (Core 1). It uses xEventGroupWaitBits to monitor the SNTP_SYNCED_BIT. If a network connection cannot be established within 10 seconds, the gatekeeper automatically keeps the logging engine disabled to preserve system resources for local playback.
+Safe Queueing: As soon as play_mp3_file() naturally completes its blocking execution loop, the core queries the global file handle, fetches the next track line, and pushes it to the 5-slot FreeRTOS queue. This prevents queue overflows, protects memory, and safely spaces tracks out over hours of continuous operation.
 
 ----------------------------------------------------------------------------------------------------------
 **Status: STABLE | Core: ESP-IDF v5.3.1 | Hardware: ESP32-S3**
@@ -255,7 +227,7 @@ Note- when setting up the WLED presets brightness, ensure that it is done in an 
 This will ensure that the automatic brightness adjustment will match the ambient light conditions automatically.
 
 ## ☀️ Background Solar Engine
-* **Location:** Adelaide/Modbury, South Australia ($34.9285^\circ$ S).
+* **Location:** Adelaide/Modbury, South Australia.
 * **Logic:** Calculates daily sunrise/sunset to drive autonomous ship lighting.
 * **Night Detection:** Uses a **15-minute "True Dark" buffer** post-sunset for "Lights On" triggers.
 

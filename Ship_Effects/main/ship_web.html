@@ -146,8 +146,8 @@
         <h2>Ship Audio Management</h2>
 
         <div class="section">
-            <strong>Upload New Effect (.mp3 or .csv)</strong><br>
-            <input type="file" id="fileInput" accept=".mp3,.csv" style="margin-top:10px;">
+            <strong>Upload New Effect (.mp3 or .csv or .txt)</strong><br>
+            <input type="file" id="fileInput" accept=".mp3,.csv,.txt" style="margin-top:10px;">
             <br>
             <button class="btn btn-upload" id="uploadBtn" onclick="uploadFile()">Upload to SD Card</button>
 
@@ -234,68 +234,89 @@
             document.getElementById('status').innerText = msg;
         }
 
-        async function fetchFiles() {
-            try {
-                const response = await fetch('/list');
-                const data = await response.json();
-                const listDiv = document.getElementById('fileList');
-                listDiv.innerHTML = '';
+       async function fetchFiles() {
+    try {
+        const response = await fetch('/list');
+        const data = await response.json();
+        const listDiv = document.getElementById('fileList');
+        listDiv.innerHTML = '';
 
-                const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
-                const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+        const audioFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.mp3'));
+        const csvFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.csv'));
+        const txtFiles = data.files.filter(f => f.name.toLowerCase().endsWith('.txt'));
 
-                audioFiles.forEach(file => {
-                    const item = document.createElement('div');
-                    const fullName = decodeURIComponent(file.name);
-                    const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
+        // 1. Process Audio Files (and check for matching CSVs)
+        audioFiles.forEach(file => {
+            const item = document.createElement('div');
+            const fullName = decodeURIComponent(file.name);
+            const baseName = fullName.substring(0, fullName.lastIndexOf('.'));
 
-                    const hasMatchingCsv = csvFiles.some(csv =>
-                        decodeURIComponent(csv.name).startsWith(baseName)
-                    );
+            const hasMatchingCsv = csvFiles.some(csv =>
+                decodeURIComponent(csv.name).startsWith(baseName)
+            );
 
-                    const isSelected = (selectedProject === baseName);
-                    item.className = 'file-item' + (isSelected ? ' selected-glow' : '');
+            const isSelected = (selectedProject === baseName);
+            item.className = 'file-item' + (isSelected ? ' selected-glow' : '');
 
-                    const selectBtnStyle = isSelected ? "background-color: #ffcc00; color: black; font-weight:bold;" : "background-color: #6c757d;";
-                    const selectBtnText = isSelected ? "SELECTED" : "Select CSV";
+            const selectBtnStyle = isSelected ? "background-color: #ffcc00; color: black; font-weight:bold;" : "background-color: #6c757d;";
+            const selectBtnText = isSelected ? "SELECTED" : "Select CSV";
 
-                    item.innerHTML = `
-                    <span>
-                        <strong>${baseName}</strong><br>
-                        <small style="color: #666;">${(file.size / 1024).toFixed(1)} KB</small>
-                        ${hasMatchingCsv ? '<span class="sync-badge">SYNC READY</span>' : ''}
-                    </span>
-                    <div>
-                        ${hasMatchingCsv ? `<button id="sel-${baseName}" class="btn" style="${selectBtnStyle} margin-right:5px;" onclick="selectProject('${baseName}')">${selectBtnText}</button>` : ''}
-                        <button class="btn btn-download" onclick="playProject('${baseName}')">Play</button>
-                        <button class="btn btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
-                    </div>
-                `;
-                    listDiv.appendChild(item);
-                });
+            item.innerHTML = `
+            <span>
+                <strong>${baseName}</strong><br>
+                <small style="color: #666;">${(file.size / 1024).toFixed(1)} KB</small>
+                ${hasMatchingCsv ? '<span class="sync-badge">SYNC READY</span>' : ''}
+            </span>
+            <div>
+                ${hasMatchingCsv ? `<button id="sel-${baseName}" class="btn" style="${selectBtnStyle} margin-right:5px;" onclick="selectProject('${baseName}')">${selectBtnText}</button>` : ''}
+                <button class="btn btn-download" onclick="playProject('${baseName}')">Play</button>
+                <button class="btn btn-delete" onclick="deleteFile('${file.name}')">Delete</button>
+            </div>
+        `;
+            listDiv.appendChild(item);
+        });
 
-                csvFiles.forEach(csv => {
-                    const csvName = decodeURIComponent(csv.name);
-                    const base = csvName.substring(0, csvName.lastIndexOf('.'));
-                    const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
+        // 2. Process CSV Files (Orphans only)
+        csvFiles.forEach(csv => {
+            const csvName = decodeURIComponent(csv.name);
+            const base = csvName.substring(0, csvName.lastIndexOf('.'));
+            const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
 
-                    if (!hasMp3) {
-                        const item = document.createElement('div');
-                        item.className = 'file-item';
-                        item.innerHTML = `
-                        <span style="color: #999;">${csvName} <small>(Script Only)</small></span>
-                        <button class="btn btn-delete" onclick="deleteFile('${csv.name}')">Delete</button>
-                    `;
-                        listDiv.appendChild(item);
-                    }
-                });
-
-                updateStorage();
-            } catch (e) {
-                document.getElementById('fileList').innerText = "Failed to load files.";
+            if (!hasMp3) {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                <span style="color: #999;">${csvName} <small>(Script Only)</small></span>
+                <button class="btn btn-delete" onclick="deleteFile('${csv.name}')">Delete</button>
+            `;
+                listDiv.appendChild(item);
             }
-        }
+        });
 
+        // 3. Process Text Files (Orphans only)
+        txtFiles.forEach(txt => {
+            const txtName = decodeURIComponent(txt.name);
+            const base = txtName.substring(0, txtName.lastIndexOf('.'));
+            // Optional: If txt files shouldn't show if an mp3/csv shares the same name, keep these checks
+            const hasMp3 = audioFiles.some(mp3 => decodeURIComponent(mp3.name).startsWith(base));
+            const hasCsv = csvFiles.some(csv => decodeURIComponent(csv.name).startsWith(base));
+
+            if (!hasMp3 && !hasCsv) {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                    <span style="color: #999;">${txtName} <small>(Text Only)</small></span>
+                    <button class="btn btn-delete" onclick="deleteFile('${txt.name}')">Delete</button>
+                `;
+                listDiv.appendChild(item);
+            }
+        });
+
+        updateStorage();
+    } catch (e) {
+        document.getElementById('fileList').innerText = "Failed to load files.";
+    }
+}
         function selectProject(name) {
             if (selectedProject === name) {
                 selectedProject = "";

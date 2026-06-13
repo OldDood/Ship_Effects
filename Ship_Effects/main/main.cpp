@@ -184,6 +184,8 @@ volatile bool is_audio_playing = false; // This flag will be set to true when mu
 
 // This queue will hold the filename of the project we want to play
 static QueueHandle_t playback_queue = NULL;
+static FILE *autoplay_file = NULL;
+void read_next_autoplay_track();   // Forward declaration for the function
 
 // In a header file included by both main.cpp and web_portal.cpp
 typedef struct
@@ -442,38 +444,71 @@ esp_err_t un_init_sd_card()
 
 void trigger_autoplay_from_sd()
 {
-    FILE *f = fopen("/sdcard/autoplay.txt", "r");
-    if (f == NULL)
+    // Open the file and store it globally so we can keep reading it later
+    autoplay_file = fopen("/sdcard/autoplay.txt", "r");
+    if (autoplay_file == NULL)
     {
         ESP_LOGI("BOOT", "No autoplay.txt found. Waiting for web command.");
         return;
     }
-    playback_cmd_t cmd;
-    memset(&cmd, 0, sizeof(playback_cmd_t));
 
-    if (fgets(cmd.filename, sizeof(cmd.filename), f) != NULL)
-    {
-        // 1. Remove ANY trailing whitespace or control characters (\r, \n, spaces)
-        int len = strlen(cmd.filename);
-        while (len > 0 && (cmd.filename[len - 1] == '\n' ||
-                           cmd.filename[len - 1] == '\r' ||
-                           cmd.filename[len - 1] == ' '))
-        {
-            cmd.filename[--len] = '\0';
-        }
+    ESP_LOGI("AUTOPLAY", "Opened autoplay.txt successfully. Starting sequence...");
 
-        // 2. Safety check: Ensure we didn't end up with an empty string
-        if (strlen(cmd.filename) > 0)
-        {
-            cmd.sync_enabled = true;
-            ESP_LOGI("BOOT", "Auto-playing: [%s]", cmd.filename);
-            is_audio_playing = true; // Lock the system immediately!
-            trigger_project_play(&cmd);
-        }
-    }
-    fclose(f);
+    // Call our helper function to read and play the very first track
+    read_next_autoplay_track();
 }
 
+void read_next_autoplay_track()
+{
+    // Safety check: if the file isn't open, there is nothing to read
+    if (autoplay_file == NULL)
+        return;
+
+    playback_cmd_t cmd;
+    char line[128];
+    bool track_found = false;
+
+    // Read line-by-line until we find a valid track or reach the end of the file
+    while (fgets(line, sizeof(line), autoplay_file) != NULL)
+    {
+        // 1. Remove trailing whitespaces, carriage returns, or line feeds
+        int len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' ||
+                           line[len - 1] == '\r' ||
+                           line[len - 1] == ' ' ||
+                           line[len - 1] == '\t'))
+        {
+            line[--len] = '\0';
+        }
+
+        // 2. Skip empty lines or comment lines starting with '#'
+        if (len == 0 || line[0] == '#')
+        {
+            continue;
+        }
+
+        // 3. We found a valid track name! Populate our command structure
+        memset(&cmd, 0, sizeof(playback_cmd_t));
+        strncpy(cmd.filename, line, sizeof(cmd.filename) - 1);
+        cmd.sync_enabled = true;
+
+        ESP_LOGI("AUTOPLAY", "Next track found: [%s]. Sending to playback queue.", cmd.filename);
+
+        // 4. Drop it into your 5-slot queue
+        trigger_project_play(&cmd);
+
+        track_found = true;
+        break; // Break out of the loop! We only want ONE track at a time.
+    }
+
+    // 5. If we checked the file and didn't find any more tracks, we are finished!
+    if (!track_found)
+    {
+        ESP_LOGI("AUTOPLAY", "Reached the end of autoplay.txt. Sequence complete.");
+        fclose(autoplay_file);
+        autoplay_file = NULL; // Reset to NULL so we know it's closed
+    }
+}
 // Adelaide, South Australia Coordinates
 const float ADL_LAT = -34.9285;
 const float ADL_LON = 138.6007;
@@ -1079,8 +1114,18 @@ void audio_playback_task(void *pvParameters)
                 ESP_LOGI("AUDIO_TASK", "New track selected. Loading sync markers from: %s", csv_path);
                 load_timeline_from_csv(csv_path);
 
-                // 4. Start the playback
+                // 4. Start the playback (This blocks until the song finishes)
                 play_mp3_file(full_path);
+
+                // === NEW AUTOPLAY CHECK ===
+                // As soon as play_mp3_file exits, the song is officially done.
+                // If autoplay is active, fetch the next line from the text file!
+                if (autoplay_file != NULL)
+                {
+                    ESP_LOGI("AUDIO_TASK", "Track finished. Fetching next autoplay track...");
+                    read_next_autoplay_track();
+                }
+                // ==========================
             }
         }
         break; // This line is never actually reached in Case 3.
