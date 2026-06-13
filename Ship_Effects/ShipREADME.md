@@ -5,6 +5,10 @@ A high-performance automation and telemetry engine for a ship model display, run
 ### 🚢 ShipEffects S3 v1.5 | Logic Engine Update
 
 **New in this version:**`
+### Changed timeline markers to seconds ###
+Channged the timeline markers in reaper from beats to seconds
+Updated .CSV marker file parsing to convert seconds to milliseconds instead of beats to milliseconds
+
 ### Will now autmaticall play all .mp3 files listed in autoplay.txt and play sequentially 
 Fix(autoplay): Implemented "Lazy Reader" Sequential Autoplay
 Upgraded the startup sequence from a single-track fire-and-forget execution to a robust, sequential file-reading state machine.

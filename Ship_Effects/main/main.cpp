@@ -1138,13 +1138,16 @@ void load_timeline_from_csv(const char *file_path)
 {
     FILE *f = fopen(file_path, "r");
     if (f == NULL)
+    {
+        // If there is no CSV, explicitly wipe out old markers so nothing stale fires
+        if (xSemaphoreTake(ship_timeline.mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+        {
+            ship_timeline.count = 0;
+            xSemaphoreGive(ship_timeline.mutex);
+        }
+        ESP_LOGW("CSV", "No marker file found at %s. Timeline cleared.", file_path);
         return;
-
-    // Constants based on your Reaper Project
-    const float bpm = 120.0;
-    const int beats_per_measure = 4;
-    const float ms_per_beat = (60.0 / bpm) * 1000.0; // 500ms at 120BPM
-    const float ms_per_tick = ms_per_beat / 960.0;   // Standard Reaper PPQ
+    }
 
     if (xSemaphoreTake(ship_timeline.mutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
@@ -1152,42 +1155,50 @@ void load_timeline_from_csv(const char *file_path)
         int marker_index = 0;
         ship_timeline.count = 0;
 
-        fgets(line, sizeof(line), f); // Skip Header
-
+        // Read line-by-line from the SD card
         while (fgets(line, sizeof(line), f) && marker_index < MAX_MARKERS)
         {
-            int m, b, t; // Measure, Beat, Tick
+            // 1. Find the first comma (separates "M1" marker ID from the descriptive Name field)
+            char *comma1 = strchr(line, ',');
+            if (!comma1) continue;
+
+            // 2. Find the second comma (separates the descriptive Name field from the Start Time field)
+            char *comma2 = strchr(comma1 + 1, ',');
+            if (!comma2) continue;
+
             int id_num;
-            char freq[32];
+            float seconds;
 
-            // Parsing: M1, 200Hz, 1.1.86
-            if (sscanf(line, "M%d,%[^,],%d.%d.%d", &id_num, freq, &m, &b, &t) == 5)
+            // 3. Extract the ID integer from the front, and the float seconds right after the second comma
+            if (sscanf(line, "M%d", &id_num) == 1 && sscanf(comma2 + 1, "%f", &seconds) == 1)
             {
-
-                // MATH:
-                // (Measures-1) * beats * ms_per_beat
-                // + (Beats-1) * ms_per_beat
-                // + (Ticks * ms_per_tick)
-                uint32_t total_ms = ((m - 1) * beats_per_measure * ms_per_beat) +
-                                    ((b - 1) * ms_per_beat) +
-                                    (t * ms_per_tick);
+                // Convert floating point seconds directly to raw uint32_t milliseconds 
+                // Adding 0.5f provides a clean rounding guard for floating-point clipping
+                uint32_t total_ms = (uint32_t)(seconds * 1000.0f + 0.5f);
 
                 ship_timeline.markers[marker_index].trigger_ms = total_ms;
                 ship_timeline.markers[marker_index].marker_id = (uint8_t)id_num;
                 ship_timeline.markers[marker_index].triggered = false;
 
-                ESP_LOGI("CSV", "Index %d: ID %d at %ld ms",
+                ESP_LOGI("CSV", "Index %d: ID %d mapped to %lu ms (Parsed from %.3fs)",
                          marker_index,
                          ship_timeline.markers[marker_index].marker_id,
-                         ship_timeline.markers[marker_index].trigger_ms);
+                         ship_timeline.markers[marker_index].trigger_ms,
+                         seconds);
+
                 marker_index++;
             }
         }
         ship_timeline.count = marker_index;
-        ESP_LOGI("CSV", "Loaded %d markers into the timeline", ship_timeline.count);
+        ESP_LOGI("CSV", "Loaded %d raw millisecond markers into the timeline", ship_timeline.count);
         xSemaphoreGive(ship_timeline.mutex);
-        fclose(f);
     }
+    else
+    {
+        ESP_LOGE("CSV", "Failed to acquire timeline mutex!");
+    }
+
+    fclose(f);
 }
 #include "nvs.h"
 
